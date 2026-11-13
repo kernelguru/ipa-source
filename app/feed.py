@@ -54,28 +54,49 @@ def build_source(request=None, legacy=False):
 
     feed_url = f"{pub}/{'apps-legacy.json' if legacy else 'apps.json'}"
     icon = s["feed_icon_url"] or (apps[0]["iconURL"] if apps else f"{pub}/default-icon.png")
+    website = s["feed_website"] or base_url(request)
+    count = len(apps)
     src = {
         "name": s["feed_name"],
         "identifier": s["feed_identifier"],
         "sourceURL": feed_url,
-        "subtitle": s["feed_subtitle"],
-        "description": s["feed_description"],
+        # Strict parsers (KravaSign) need every key present and non-empty
+        "subtitle": s["feed_subtitle"] or f"{count} App{'s' if count != 1 else ''}",
+        "description": s["feed_description"] or s["feed_subtitle"] or s["feed_name"],
         "iconURL": icon,
         "headerURL": s["feed_header_url"] or icon,
-        "website": s["feed_website"] or base_url(request),
+        "website": website,
+        "patreonURL": website,
         "tintColor": tint,
         "nsfw": False,
         "featuredApps": [x["bundleIdentifier"] for x in apps][:5],
         "apps": apps,
-        "news": [],
+        "news": _news(apps, website, legacy),
     }
     if legacy:
         for k in ("nsfw", "featuredApps", "headerURL"):
             src.pop(k)
-    for k in ("subtitle", "description"):
-        if not src[k]:
-            src.pop(k)
     return src
+
+
+def _news(apps, website, legacy, limit=6):
+    """One news item per recent version (newest first) – also keeps strict parsers happy."""
+    items = []
+    for a in apps:
+        for v in a["versions"][:2]:
+            items.append({
+                "title": f"{a['name']} {v['version']}",
+                "identifier": f"{a['bundleIdentifier']}-{v['version']}-{v['buildVersion']}",
+                "caption": f"Version {v['version']} ({v['buildVersion']}) ist verfügbar.",
+                "date": v["date"],
+                "url": website,
+                "appID": a["bundleIdentifier"],
+                "imageURL": a["iconURL"],
+                "tintColor": a["tintColor"],
+                "notify": False,
+            })
+    items.sort(key=lambda n: n["date"], reverse=True)
+    return items[:limit]
 
 
 def _app_entry(a, builds, s, pub, tint, legacy):
@@ -94,7 +115,7 @@ def _app_entry(a, builds, s, pub, tint, legacy):
             "version": b["version"],
             "buildVersion": b["build_version"],
             "date": b["date"][:10] if legacy else b["date"],
-            "localizedDescription": b["notes"],
+            "localizedDescription": b["notes"] or f"Version {b['version']} ({b['build_version']})",
             "downloadURL": f"{pub}/dl/{b['id']}/{b['filename']}",
             "size": b["size"],
             "sha256": b["sha256"],
@@ -109,7 +130,7 @@ def _app_entry(a, builds, s, pub, tint, legacy):
         "name": a["name"],
         "bundleIdentifier": a["bundle_id"],
         "developerName": a["developer"] or s["developer"] or "Unknown",
-        "subtitle": a["subtitle"],
+        "subtitle": a["subtitle"] or a["description"][:80] or a["name"],
         "localizedDescription": a["description"] or a["subtitle"] or a["name"],
         "iconURL": icon,
         "tintColor": hexcolor(a["tint"], tint),
