@@ -1,0 +1,223 @@
+openapi: 3.1.0
+info:
+  title: ipa-source API
+  version: "1"
+  description: |
+    REST API of ipa-source. Used by the web admin and intended for native clients (iOS app).
+
+    **Auth**
+    - Native clients: `POST /auth/token` with username/password → API token, then
+      `Authorization: Bearer <token>`.
+    - Browser: session cookie from `POST /auth/login`; mutating requests must send
+      `X-Requested-With: ipa-source`.
+    - Token scopes: `full` (everything), `read` (GET only), `upload` (only `/uploads`).
+
+    **Errors** always look like `{"error": {"code": "...", "message": "..."}}`.
+servers:
+  - url: /api/v1
+security:
+  - bearer: []
+components:
+  securitySchemes:
+    bearer: {type: http, scheme: bearer}
+    cookie: {type: apiKey, in: cookie, name: ipas_session}
+  schemas:
+    Error:
+      type: object
+      properties:
+        error: {type: object, properties: {code: {type: string}, message: {type: string}}}
+    Build:
+      type: object
+      properties:
+        id: {type: integer}
+        app_id: {type: integer}
+        source_id: {type: [integer, "null"]}
+        origin: {type: string, enum: [release, artifact, upload, webdav]}
+        origin_ref: {type: string, description: "Release tag, artifact id or upload id"}
+        repo: {type: [string, "null"]}
+        version: {type: string}
+        build_version: {type: string}
+        min_os: {type: string}
+        size: {type: integer}
+        sha256: {type: string}
+        date: {type: string, format: date-time}
+        notes: {type: string}
+        filename: {type: string}
+        visible: {type: boolean}
+        pinned: {type: boolean, description: "Not removed by retention"}
+        permissions: {type: object}
+        download_url: {type: string}
+    App:
+      type: object
+      properties:
+        id: {type: integer}
+        bundle_id: {type: string}
+        name: {type: string}
+        subtitle: {type: string}
+        description: {type: string}
+        developer: {type: string}
+        tint: {type: string}
+        category: {type: string, enum: [developer, entertainment, games, lifestyle, other, photo-video, social, utilities]}
+        icon: {type: [string, "null"]}
+        icon_url: {type: string, description: "External icon override"}
+        visible: {type: boolean}
+        sort_order: {type: integer}
+        screenshots: {type: array, items: {type: string}}
+        entitlements: {type: array, items: {type: string}}
+        privacy: {type: object, additionalProperties: {type: string}}
+        build_count: {type: integer}
+        latest: {$ref: "#/components/schemas/Build"}
+        builds: {type: array, items: {$ref: "#/components/schemas/Build"}, description: "Only on GET /apps/{id}"}
+    Source:
+      type: object
+      properties:
+        id: {type: integer}
+        kind: {type: string, enum: [github]}
+        repo: {type: string, example: kernelguru/my-app}
+        use_releases: {type: boolean}
+        use_artifacts: {type: boolean}
+        include_prereleases: {type: boolean}
+        asset_pattern: {type: string, example: "*.ipa"}
+        artifact_name: {type: string, example: "*"}
+        artifact_branch: {type: string}
+        keep_releases: {type: integer}
+        keep_artifacts: {type: integer}
+        enabled: {type: boolean}
+        last_sync_at: {type: [string, "null"]}
+        last_status: {type: string}
+        last_error: {type: string}
+        build_count: {type: integer}
+        syncing: {type: boolean}
+paths:
+  /info:
+    get:
+      summary: Server info (public)
+      security: []
+      responses:
+        "200":
+          description: OK
+          content: {application/json: {schema: {type: object, properties: {
+            name: {type: string}, version: {type: string}, api: {type: string},
+            setup_required: {type: boolean}, features: {type: array, items: {type: string}}}}}}
+  /setup:
+    post:
+      summary: Create the first admin user (only while no user exists)
+      security: []
+      requestBody: {content: {application/json: {schema: {type: object, properties: {username: {type: string}, password: {type: string}}}}}}
+      responses: {"200": {description: Logged in (cookie)}, "409": {description: Already set up}}
+  /auth/login:
+    post:
+      summary: Browser login (sets session cookie)
+      security: []
+      requestBody: {content: {application/json: {schema: {type: object, properties: {username: {type: string}, password: {type: string}}}}}}
+      responses: {"200": {description: OK}, "401": {description: Bad credentials}}
+  /auth/token:
+    post:
+      summary: Native login – exchange credentials for an API token
+      security: []
+      requestBody: {content: {application/json: {schema: {type: object, required: [username, password], properties: {
+        username: {type: string}, password: {type: string}, name: {type: string, example: "iPhone"},
+        scope: {type: string, enum: [full, read, upload], default: full}}}}}}
+      responses:
+        "201": {description: Created, content: {application/json: {schema: {type: object, properties: {token: {type: string}, token_id: {type: integer}}}}}}
+  /auth/logout: {post: {summary: Logout, responses: {"200": {description: OK}}}}
+  /me: {get: {summary: Current user + scope, responses: {"200": {description: OK}}}}
+  /me/password:
+    put:
+      summary: Change password
+      requestBody: {content: {application/json: {schema: {type: object, properties: {current: {type: string}, new: {type: string}}}}}}
+      responses: {"200": {description: OK}}
+  /tokens:
+    get: {summary: List API tokens, responses: {"200": {description: OK}}}
+    post:
+      summary: Create API token (returned once)
+      requestBody: {content: {application/json: {schema: {type: object, properties: {name: {type: string}, scope: {type: string, enum: [full, read, upload]}}}}}}
+      responses: {"201": {description: Created}}
+  /tokens/{id}:
+    delete: {summary: Revoke token, parameters: [{name: id, in: path, required: true, schema: {type: integer}}], responses: {"200": {description: OK}}}
+  /settings:
+    get: {summary: Settings (secrets masked), responses: {"200": {description: OK}}}
+    patch:
+      summary: Update settings
+      description: "Keys: base_url, feed_name, feed_identifier, feed_subtitle, feed_description, feed_icon_url, feed_header_url, feed_website, feed_tint, feed_private, developer, github_client_id, sync_interval, webhook_secret"
+      requestBody: {content: {application/json: {schema: {type: object}}}}
+      responses: {"200": {description: OK}}
+  /feed: {get: {summary: "Feed, WebDAV, upload and webhook URLs", responses: {"200": {description: OK}}}}
+  /feed/rotate-key: {post: {summary: New secret key for the private feed, responses: {"200": {description: OK}}}}
+  /apps:
+    get:
+      summary: List apps (scope read)
+      responses: {"200": {description: OK, content: {application/json: {schema: {type: object, properties: {apps: {type: array, items: {$ref: "#/components/schemas/App"}}}}}}}}
+  /apps/{id}:
+    parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+    get: {summary: App with builds, responses: {"200": {description: OK, content: {application/json: {schema: {$ref: "#/components/schemas/App"}}}}}}
+    patch: {summary: Update store metadata, requestBody: {content: {application/json: {schema: {$ref: "#/components/schemas/App"}}}}, responses: {"200": {description: OK}}}
+    delete: {summary: Delete app and all builds, responses: {"200": {description: OK}}}
+  /apps/{id}/icon:
+    put:
+      summary: Replace icon (raw PNG body)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody: {content: {image/png: {schema: {type: string, format: binary}}}}
+      responses: {"200": {description: OK}}
+  /builds/{id}:
+    parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+    patch:
+      summary: Toggle visible/pinned, edit notes
+      requestBody: {content: {application/json: {schema: {type: object, properties: {visible: {type: boolean}, pinned: {type: boolean}, notes: {type: string}}}}}}
+      responses: {"200": {description: OK}}
+    delete: {summary: Delete build, responses: {"200": {description: OK}}}
+  /sources:
+    get: {summary: List GitHub sources, responses: {"200": {description: OK}}}
+    post: {summary: Add source (starts sync), requestBody: {content: {application/json: {schema: {$ref: "#/components/schemas/Source"}}}}, responses: {"201": {description: Created}}}
+  /sources/{id}:
+    parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+    get: {summary: Source, responses: {"200": {description: OK}}}
+    patch: {summary: Update source, responses: {"200": {description: OK}}}
+    delete:
+      summary: Remove source
+      parameters: [{name: delete_builds, in: query, schema: {type: boolean}}]
+      responses: {"200": {description: OK}}
+  /sources/{id}/sync:
+    post: {summary: Sync one source now, parameters: [{name: id, in: path, required: true, schema: {type: integer}}], responses: {"202": {description: Queued}}}
+  /sync: {post: {summary: Sync all sources, responses: {"202": {description: Queued}}}}
+  /status: {get: {summary: Worker state and counters, responses: {"200": {description: OK}}}}
+  /events: {get: {summary: Event log, parameters: [{name: limit, in: query, schema: {type: integer}}], responses: {"200": {description: OK}}}}
+  /github: {get: {summary: GitHub connection state, responses: {"200": {description: OK}}}}
+  /github/token:
+    put: {summary: Connect with personal access token, requestBody: {content: {application/json: {schema: {type: object, properties: {token: {type: string}}}}}}, responses: {"200": {description: OK}}}
+    delete: {summary: Disconnect, responses: {"200": {description: OK}}}
+  /github/device/start: {post: {summary: Start OAuth device flow (needs github_client_id), responses: {"200": {description: "handle, user_code, verification_uri, interval"}}}}
+  /github/device/poll:
+    post:
+      summary: Poll device flow
+      requestBody: {content: {application/json: {schema: {type: object, properties: {handle: {type: string}}}}}}
+      responses: {"200": {description: "status: connected | authorization_pending | slow_down | expired_token | access_denied"}}
+  /github/repos: {get: {summary: Repos of the connected account, responses: {"200": {description: OK}}}}
+  /github/repos/{owner}/{repo}/scan:
+    get:
+      summary: Look for IPA releases / artifacts in a repo
+      parameters:
+        - {name: owner, in: path, required: true, schema: {type: string}}
+        - {name: repo, in: path, required: true, schema: {type: string}}
+      responses: {"200": {description: OK}}
+  /uploads:
+    post:
+      summary: Upload IPA (multipart) – scope upload
+      requestBody:
+        content:
+          multipart/form-data:
+            schema: {type: object, properties: {file: {type: string, format: binary}, notes: {type: string}, visible: {type: string, enum: ["0", "1"]}}}
+      responses: {"201": {description: "Imported: {build, app}"}, "400": {description: Not a valid IPA}}
+    put:
+      summary: Upload IPA as raw body (CI-friendly, curl -T) – scope upload
+      parameters:
+        - {name: filename, in: query, schema: {type: string}}
+        - {name: notes, in: query, schema: {type: string}}
+        - {name: visible, in: query, schema: {type: string, enum: ["0", "1"]}}
+      requestBody: {content: {application/octet-stream: {schema: {type: string, format: binary}}}}
+      responses: {"201": {description: Imported}}
+  /webhooks/github:
+    post:
+      summary: GitHub webhook (release, workflow_run) – HMAC signed, public
+      security: []
+      responses: {"200": {description: OK}, "401": {description: Bad signature}}

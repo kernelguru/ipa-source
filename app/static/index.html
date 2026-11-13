@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>ipa-source</title>
+  <link rel="icon" href="/default-icon.png">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="nav" hidden>
+      <div class="brand"><span class="logo"></span>ipa-source</div>
+      <nav>
+        <a href="#/apps" data-nav="apps">Apps</a>
+        <a href="#/sources" data-nav="sources">GitHub-Quellen</a>
+        <a href="#/upload" data-nav="upload">Upload</a>
+        <a href="#/feed" data-nav="feed">Feed &amp; Zugänge</a>
+        <a href="#/settings" data-nav="settings">Einstellungen</a>
+        <a href="#/log" data-nav="log">Protokoll</a>
+      </nav>
+      <div class="nav-foot">
+        <div id="worker" class="muted small"></div>
+        <button class="link" id="logout">Abmelden</button>
+      </div>
+    </aside>
+    <main id="view"><div class="center muted">Lade …</div></main>
+  </div>
+  <div id="toast"></div>
+  <dialog id="modal"><form method="dialog" id="modal-body"></form></dialog>
+  <script src="/static/app.js" type="module"></script>
+</body>
+</html>
