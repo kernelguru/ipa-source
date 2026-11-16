@@ -29,6 +29,10 @@ function toast(msg, error = false) {
 const guard = (fn) => async (...a) => { try { await fn(...a); } catch (e) { if (e.message !== "Nicht angemeldet") toast(e.message, true); } };
 const fmtSize = (n) => n > 1e9 ? (n / 1e9).toFixed(2) + " GB" : n > 1e6 ? (n / 1e6).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1e3)) + " KB";
 const fmtDate = (s) => s ? new Date(s).toLocaleString("de-DE", { dateStyle: "medium", timeStyle: "short" }) : "–";
+const iconBadge = (a) => ({
+  missing: '<span class="badge err">Kein Logo</span>', blank: '<span class="badge err">Leeres Logo</span>',
+  custom: '<span class="badge upload">Eigenes Icon</span>', external: '<span class="badge">Externes Icon</span>',
+}[a.icon_status] || "");
 const originLabel = { release: "Release", artifact: "Artefakt", upload: "Upload", webdav: "WebDAV" };
 
 function modal(html, onSubmit) {
@@ -55,13 +59,13 @@ document.addEventListener("click", (e) => {
 // --------------------------------------------------------------- router --
 const routes = {
   apps: renderApps, app: renderApp, sources: renderSources, github: renderGithubRepos,
-  upload: renderUpload, feed: renderFeed, settings: renderSettings, log: renderLog,
+  upload: renderUpload, feed: renderFeed, settings: renderSettings, log: renderLog, icon: renderIconDesigner,
 };
 let timer = null;
 async function route() {
   clearInterval(timer);
   const [, name = "apps", arg] = location.hash.split("/");
-  $$("nav a").forEach((a) => a.classList.toggle("active", a.dataset.nav === (name === "app" ? "apps" : name === "github" ? "sources" : name)));
+  $$("nav a").forEach((a) => a.classList.toggle("active", a.dataset.nav === (["app", "icon"].includes(name) ? "apps" : name === "github" ? "sources" : name)));
   await guard((routes[name] || renderApps))(arg);
 }
 
@@ -126,7 +130,7 @@ async function renderApps() {
       <a class="panel app-card" href="#/app/${a.id}">
         <img class="icon" src="${esc(a.icon || "/default-icon.png")}" alt="">
         <div style="min-width:0">
-          <div class="title">${esc(a.name)} ${a.visible ? "" : '<span class="badge">versteckt</span>'}</div>
+          <div class="title">${esc(a.name)} ${a.visible ? "" : '<span class="badge">versteckt</span>'} ${["missing", "blank"].includes(a.icon_status) ? iconBadge(a) : ""}</div>
           <div class="muted small mono" style="overflow:hidden;text-overflow:ellipsis">${esc(a.bundle_id)}</div>
           <div class="small">${a.latest ? `${esc(a.latest.version)} (${esc(a.latest.build_version)}) <span class="badge ${a.latest.origin}">${originLabel[a.latest.origin]}</span>` : "keine Builds"}
             <span class="muted">· ${a.build_count} Builds</span></div>
@@ -139,16 +143,23 @@ async function renderApp(id) {
   const a = await api("GET", `/apps/${id}`);
   view.innerHTML = `
     <div class="head"><div class="row"><img class="icon lg" src="${esc(a.icon || "/default-icon.png")}">
-      <div><h1>${esc(a.name)}</h1><div class="muted mono small">${esc(a.bundle_id)}</div></div></div>
-      <div class="row"><label class="btn">Icon hochladen<input type="file" accept="image/png" id="iconfile" hidden></label>
+      <div><h1>${esc(a.name)}</h1><div class="muted mono small">${esc(a.bundle_id)}</div><div style="margin-top:4px">${iconBadge(a)}</div></div></div>
+      <div class="row"><a class="btn ${["missing", "blank"].includes(a.icon_status) ? "primary" : ""}" href="#/icon/${a.id}">Icon gestalten</a>
+      <label class="btn">PNG nur für Feed<input type="file" accept="image/png" id="iconfile" hidden></label>
       <button class="danger" id="delapp">App löschen</button></div></div>
 
+    ${a.icon_custom ? `<div class="panel row spread"><div><b>Eigenes Icon</b><div class="muted small">
+        ${a.builds.filter((b) => b.icon_injected).length} von ${a.builds.length} Builds enthalten das Icon. Eingebaute Icons ersetzen das Icon der App auf dem Homescreen.</div></div>
+      <div class="row"><label class="check"><input type="checkbox" id="autoinj" ${a.auto_inject ? "checked" : ""}> Neue Builds automatisch</label>
+        <button id="injall" class="primary sm">In alle Builds einbauen</button><button id="rmicon" class="sm danger">Entfernen</button></div></div>` : ""}
+
     <div class="panel"><h2>Builds</h2>
-      <table><thead><tr><th>Version</th><th>Herkunft</th><th>Datum</th><th>Größe</th><th>Im Feed</th><th>Fixiert</th><th></th></tr></thead><tbody>
+      <table><thead><tr><th>Version</th><th>Herkunft</th><th>Datum</th><th>Größe</th><th>Icon</th><th>Im Feed</th><th>Fixiert</th><th></th></tr></thead><tbody>
       ${a.builds.map((b) => `<tr data-id="${b.id}">
         <td><b>${esc(b.version)}</b> <span class="muted">(${esc(b.build_version)})</span>${b.min_os ? `<div class="muted small">ab iOS ${esc(b.min_os)}</div>` : ""}</td>
         <td><span class="badge ${b.origin}">${originLabel[b.origin]}</span><div class="muted small">${esc(b.repo || "")} ${b.origin === "release" ? esc(b.origin_ref) : ""}</div></td>
         <td class="small">${fmtDate(b.date)}</td><td class="small">${fmtSize(b.size)}</td>
+        <td class="small">${b.icon_state ? `<span class="badge ${b.icon_state.startsWith("Fehler") ? "err" : ""}" title="${esc(b.icon_state)}">${esc(b.icon_state.slice(0, 20))}</span>` : b.icon_injected ? '<span class="badge release">eingebaut</span>' : '<span class="muted">–</span>'}</td>
         <td><input type="checkbox" data-f="visible" ${b.visible ? "checked" : ""}></td>
         <td><input type="checkbox" data-f="pinned" ${b.pinned ? "checked" : ""} title="Wird von der Aufbewahrung nicht gelöscht"></td>
         <td class="row" style="justify-content:flex-end"><a class="btn sm" href="${esc(b.download_url)}">Laden</a>
@@ -182,6 +193,16 @@ async function renderApp(id) {
     });
     toast("Gespeichert"); renderApp(id);
   });
+  $("#autoinj")?.addEventListener("change", guard(async (e) => { await api("PATCH", `/apps/${id}`, { auto_inject: e.target.checked }); toast("Gespeichert"); }));
+  $("#injall")?.addEventListener("click", guard(async () => { await api("POST", `/apps/${id}/inject-icon`, {}); toast("Icon wird eingebaut"); renderApp(id); }));
+  $("#rmicon")?.addEventListener("click", guard(async () => {
+    if (!confirm("Eigenes Icon entfernen? Bereits eingebaute Icons bleiben in den Builds.")) return;
+    await api("DELETE", `/apps/${id}/custom-icon`); renderApp(id);
+  }));
+  if (a.builds.some((b) => ["wartet", "läuft"].includes(b.icon_state))) {
+    clearInterval(timer);
+    timer = setInterval(() => { if (location.hash === `#/app/${id}`) renderApp(id); else clearInterval(timer); }, 2500);
+  }
   $("#iconfile").onchange = guard(async (e) => {
     await api("PUT", `/apps/${id}/icon`, e.target.files[0]); toast("Icon gespeichert"); renderApp(id);
   });
@@ -291,6 +312,174 @@ async function renderGithubRepos() {
     const workers = Array.from({ length: 4 }, async () => { while (todo.length) await scan(todo.shift()); });
     await Promise.all(workers);
   };
+  draw();
+}
+
+// --------------------------------------------------------- icon designer --
+const ICON_SIZES = [1024, 180, 167, 152, 120, 76];
+
+async function renderIconDesigner(id) {
+  const a = await api("GET", `/apps/${id}`);
+  const st = { img: null, zoom: 1, x: 0, y: 0, bg1: "#ffffff", bg2: "#5c7aea", grad: false, angle: 135,
+               text: "", tsize: 300, tcolor: "#ffffff", ty: 50, tweight: "700", shadow: false };
+  view.innerHTML = `<div class="head"><div><h1>Icon gestalten</h1><div class="muted"><a href="#/app/${a.id}">${esc(a.name)}</a> · ${esc(a.bundle_id)}</div></div></div>
+  <div class="designer">
+    <div class="panel stack" style="text-align:center">
+      <canvas id="cv" width="1024" height="1024" class="icon-canvas"></canvas>
+      <div class="muted small">Bild mit der Maus/dem Finger verschieben · Mausrad zoomt</div>
+      <div class="row" style="justify-content:center;gap:24px">
+        <div class="home light"><canvas width="120" height="120" class="mini"></canvas><span>${esc(a.name)}</span></div>
+        <div class="home dark"><canvas width="120" height="120" class="mini"></canvas><span>${esc(a.name)}</span></div>
+      </div>
+    </div>
+    <div class="stack">
+      <div class="panel stack"><h2>Bild</h2>
+        <div class="row"><label class="btn sm">Datei wählen<input type="file" accept="image/*" id="dfile" hidden></label>
+          <button class="sm" id="dcurrent">Aktuelles Icon</button><button class="sm" id="dclear">Kein Bild</button></div>
+        <div class="copy"><input id="durl" placeholder="Bild-URL aus dem Internet (PNG, JPG, SVG, WebP)"><button class="sm" id="dload">Laden</button></div>
+        <div class="muted small">Tipp: Bild kopieren und hier mit Strg/⌘+V einfügen.</div>
+        <div><label>Größe <span id="zv"></span></label><input type="range" id="zoom" min="5" max="400" value="100"></div>
+        <div class="row"><button class="sm" id="dcenter">Zentrieren</button><button class="sm" id="dfill">Füllend</button><button class="sm" id="dfit">Einpassen</button></div>
+      </div>
+      <div class="panel stack"><h2>Hintergrund</h2>
+        <div class="row"><input type="color" id="bg1" value="#ffffff"><label class="check"><input type="checkbox" id="grad"> Verlauf</label>
+          <input type="color" id="bg2" value="#5c7aea"><input type="range" id="angle" min="0" max="360" value="135" style="flex:1"></div>
+        <div class="row">${["#ffffff", "#000000", "#1c1c1e", "#5c7aea", "#ff3b30", "#ff9500", "#34c759", "#007aff", "#af52de"].map((c) => `<button class="swatch" data-c="${c}" style="background:${c}" title="${c}"></button>`).join("")}</div>
+      </div>
+      <div class="panel stack"><h2>Text / Emoji</h2>
+        <input id="dtext" placeholder="z. B. R5 oder 📡" maxlength="12">
+        <div class="row"><input type="color" id="tcolor" value="#ffffff"><select id="tweight" style="width:auto"><option value="400">Normal</option><option value="700" selected>Fett</option><option value="900">Schwarz</option></select>
+          <label class="check"><input type="checkbox" id="tshadow"> Schatten</label></div>
+        <div><label>Textgröße</label><input type="range" id="tsize" min="60" max="800" value="300"></div>
+        <div><label>Vertikale Position</label><input type="range" id="ty" min="10" max="90" value="50"></div>
+      </div>
+      <div class="panel stack"><h2>Speichern</h2>
+        <label class="check"><input type="checkbox" id="sinject" checked> In alle vorhandenen Builds einbauen (Homescreen-Icon)</label>
+        <label class="check"><input type="checkbox" id="sauto" ${a.auto_inject || !a.icon_custom ? "checked" : ""}> Auch in künftige Builds automatisch einbauen</label>
+        <div class="row"><button class="primary" id="dsave">Speichern</button><a class="btn" href="#/app/${a.id}">Abbrechen</a>
+          <button class="sm link" id="dpng">Als PNG herunterladen</button></div>
+      </div>
+    </div>
+  </div>`;
+
+  const cv = $("#cv"), ctx = cv.getContext("2d");
+  const minis = $$(".mini");
+
+  function base() { // scale at which the image fits ("contain") in 80 % of the canvas
+    if (!st.img) return 1;
+    return Math.min(1024 * 0.8 / st.img.width, 1024 * 0.8 / st.img.height);
+  }
+  function paint(c, size) {
+    const k = size / 1024;
+    c.save();
+    c.clearRect(0, 0, size, size);
+    if (st.grad) {
+      const r = (st.angle - 90) * Math.PI / 180, cx = size / 2, d = size / 2;
+      const g = c.createLinearGradient(cx - Math.cos(r) * d, cx - Math.sin(r) * d, cx + Math.cos(r) * d, cx + Math.sin(r) * d);
+      g.addColorStop(0, st.bg1); g.addColorStop(1, st.bg2); c.fillStyle = g;
+    } else c.fillStyle = st.bg1;
+    c.fillRect(0, 0, size, size);
+    c.imageSmoothingEnabled = true; c.imageSmoothingQuality = "high";
+    if (st.img) {
+      const s = base() * st.zoom * k, w = st.img.width * s, h = st.img.height * s;
+      c.drawImage(st.img, size / 2 - w / 2 + st.x * k, size / 2 - h / 2 + st.y * k, w, h);
+    }
+    if (st.text) {
+      c.font = `${st.tweight} ${st.tsize * k}px -apple-system, "SF Pro Rounded", "Segoe UI", system-ui, sans-serif`;
+      c.textAlign = "center"; c.textBaseline = "middle"; c.fillStyle = st.tcolor;
+      if (st.shadow) { c.shadowColor = "rgba(0,0,0,.35)"; c.shadowBlur = 24 * k; c.shadowOffsetY = 8 * k; }
+      c.fillText(st.text, size / 2, size * st.ty / 100);
+    }
+    c.restore();
+  }
+  function draw() {
+    paint(ctx, 1024);
+    minis.forEach((m) => paint(m.getContext("2d"), 120));
+    $("#zv").textContent = `${Math.round(st.zoom * 100)} %`;
+  }
+  async function loadSrc(src) {
+    const img = new Image();
+    img.decoding = "async";
+    await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error("Bild konnte nicht geöffnet werden")); img.src = src; });
+    if (!img.width) { img.width = 1024; img.height = 1024; }  // SVG without intrinsic size
+    st.img = img; st.zoom = 1; st.x = 0; st.y = 0; $("#zoom").value = 100;
+    draw();
+  }
+  const loadBlob = (blob) => loadSrc(URL.createObjectURL(blob));
+
+  $("#dfile").onchange = guard(async (e) => { if (e.target.files[0]) await loadBlob(e.target.files[0]); });
+  $("#dload").onclick = guard(async () => {
+    const url = $("#durl").value.trim(); if (!url) return;
+    const res = await fetch(`/api/v1/tools/fetch-image?url=${encodeURIComponent(url)}`, { credentials: "same-origin" });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error?.message || `HTTP ${res.status}`);
+    await loadBlob(await res.blob());
+  });
+  $("#dcurrent").onclick = guard(async () => {
+    if (!a.icon) throw new Error("Die App hat noch kein Icon");
+    const same = a.icon.startsWith(location.origin) || a.icon.startsWith("/");
+    const res = await fetch(same ? a.icon : `/api/v1/tools/fetch-image?url=${encodeURIComponent(a.icon)}`, { credentials: "same-origin" });
+    await loadBlob(await res.blob());
+  });
+  $("#dclear").onclick = () => { st.img = null; draw(); };
+  const onPaste = guard(async (e) => {
+    if (!location.hash.startsWith("#/icon/")) return document.removeEventListener("paste", onPaste);
+    const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith("image/"));
+    if (item) { e.preventDefault(); await loadBlob(item.getAsFile()); return; }
+    const txt = e.clipboardData?.getData("text") || "";
+    if (/^https?:\/\//.test(txt) && document.activeElement !== $("#durl")) { $("#durl").value = txt; $("#dload").click(); }
+  });
+  document.addEventListener("paste", onPaste);
+
+  $("#zoom").oninput = (e) => { st.zoom = e.target.value / 100; draw(); };
+  $("#dcenter").onclick = () => { st.x = 0; st.y = 0; draw(); };
+  $("#dfit").onclick = () => { st.zoom = 1; st.x = 0; st.y = 0; $("#zoom").value = 100; draw(); };
+  $("#dfill").onclick = () => {
+    if (!st.img) return;
+    st.zoom = Math.max(1024 / st.img.width, 1024 / st.img.height) / base(); st.x = 0; st.y = 0;
+    $("#zoom").value = Math.min(400, st.zoom * 100); draw();
+  };
+  // drag + wheel
+  let drag = null;
+  cv.onpointerdown = (e) => { drag = { x: e.clientX, y: e.clientY, sx: st.x, sy: st.y }; cv.setPointerCapture(e.pointerId); };
+  cv.onpointermove = (e) => {
+    if (!drag) return;
+    const k = 1024 / cv.getBoundingClientRect().width;
+    st.x = drag.sx + (e.clientX - drag.x) * k; st.y = drag.sy + (e.clientY - drag.y) * k; draw();
+  };
+  cv.onpointerup = cv.onpointercancel = () => { drag = null; };
+  cv.onwheel = (e) => {
+    e.preventDefault();
+    st.zoom = Math.min(4, Math.max(0.05, st.zoom * (e.deltaY < 0 ? 1.06 : 1 / 1.06)));
+    $("#zoom").value = st.zoom * 100; draw();
+  };
+  // background + text
+  const bind = (sel, key, conv = (v) => v, ev = "input") => { $(sel).addEventListener(ev, (e) => { st[key] = conv(e.target.type === "checkbox" ? e.target.checked : e.target.value); draw(); }); };
+  bind("#bg1", "bg1"); bind("#bg2", "bg2"); bind("#grad", "grad", Boolean, "change"); bind("#angle", "angle", Number);
+  bind("#dtext", "text"); bind("#tcolor", "tcolor"); bind("#tweight", "tweight", String, "change");
+  bind("#tshadow", "shadow", Boolean, "change"); bind("#tsize", "tsize", Number); bind("#ty", "ty", Number);
+  $$(".swatch").forEach((b) => b.onclick = () => { st.bg1 = b.dataset.c; $("#bg1").value = b.dataset.c; draw(); });
+
+  const render = (px) => new Promise((ok) => {
+    const c = document.createElement("canvas"); c.width = c.height = px;
+    paint(c.getContext("2d"), px); c.toBlob(ok, "image/png");
+  });
+  $("#dpng").onclick = guard(async () => {
+    const blob = await render(1024);
+    const l = document.createElement("a"); l.href = URL.createObjectURL(blob); l.download = `${a.name}-icon.png`; l.click();
+  });
+  $("#dsave").onclick = guard(async () => {
+    if (!st.img && !st.text && !st.grad && st.bg1.toLowerCase() === "#ffffff") throw new Error("Das Icon ist noch leer");
+    $("#dsave").disabled = true;
+    try {
+      const fd = new FormData();
+      for (const px of ICON_SIZES) fd.append(`icon_${px}`, await render(px), `${px}.png`);
+      fd.append("inject", $("#sinject").checked ? "all" : "none");
+      fd.append("auto_inject", $("#sauto").checked ? "1" : "0");
+      await api("PUT", `/apps/${a.id}/custom-icon`, fd);
+      toast($("#sinject").checked ? "Gespeichert – Icon wird in die Builds eingebaut" : "Gespeichert");
+      location.hash = `#/app/${a.id}`;
+    } finally { $("#dsave").disabled = false; }
+  });
   draw();
 }
 

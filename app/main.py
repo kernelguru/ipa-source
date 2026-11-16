@@ -122,6 +122,10 @@ def public_routes(prefix=""):
 async def lifespan(app):
     db.init()
     auth.bootstrap_admin()
+    try:
+        store.recheck_icons()
+    except Exception as e:
+        db.log_event("error", f"Icon-Prüfung: {e}")
     sync.start()
     db.log_event("info", f"ipa-source {config.VERSION} gestartet, Daten in {config.DATA_DIR}")
     yield

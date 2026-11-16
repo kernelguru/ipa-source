@@ -3,7 +3,7 @@ import os
 import secrets
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 API_VERSION = "v1"
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data")).resolve()

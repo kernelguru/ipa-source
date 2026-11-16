@@ -14,6 +14,9 @@ verwaltet über ein Web-Admin mit REST-API.
   Privacy-Texte und Entitlements werden aus der IPA gelesen.
 - **Aufbewahrung** pro Quelle (N Releases / M Artefakte), einzelne Builds fixierbar.
   Abgelaufene Artefakte bleiben lokal erhalten.
+- **Icon-Designer**: Logo aus Datei, Zwischenablage oder Internet-URL, mit Hintergrund/Verlauf und Text/Emoji.
+  Das Icon wird optional **direkt in die IPA eingebaut** (auch bei großen IPAs in Sekunden), automatisch auch in neue Builds.
+  Leere oder fehlende Logos werden erkannt.
 - **Webhook** für sofortigen Sync nach Release/Workflow-Run
 - **API-first** (`/api/v1`, Bearer-Tokens mit Scopes), damit eine iOS-App später dieselbe API nutzen kann.
   Spezifikation: [`docs/openapi.yaml`](docs/openapi.yaml)
@@ -72,6 +75,22 @@ lässt sich fortsetzen. Dafür einfach dieselbe Datei erneut wählen. Ein Größ
 
 Native Clients nutzen dieselbe API: `POST /api/v1/uploads/sessions` → `PUT …/{id}?offset=N` pro Teil
 → `POST …/{id}/complete` → `GET …/{id}` bis `status` `done` ist (siehe `docs/openapi.yaml`).
+
+## Icons
+
+Apps ohne Logo oder mit leerem Logo (einfarbig/transparent) sind in der App-Liste markiert.
+Unter **Icon gestalten** baust du ein Icon und speicherst es:
+
+- **nur Feed**: Das Icon erscheint in Feather/KravaSign/AltStore.
+- **in Builds einbauen**: Die IPA bekommt `AppIcon60x60@2x/@3x.png` und die iPad-Größen, und in der `Info.plist`
+  wird `CFBundleIconName` entfernt. Damit nutzt iOS die neuen Dateien statt des Icons aus der `Assets.car`,
+  die selbst unverändert bleibt. Es werden nur die neuen Dateien plus das ZIP-Inhaltsverzeichnis
+  angehängt. Das dauert unabhängig von der IPA-Größe Sekunden, danach wird die Prüfsumme neu berechnet.
+- **künftige Builds automatisch**: Neue Releases, Artefakte und Uploads bekommen das Icon beim Import.
+
+Hinweise: Alternative Icons der App bleiben unverändert. Bei einer bereits installierten App zeigt iOS das neue
+Icon manchmal erst nach einer Neuinstallation. Während das Icon eingebaut wird, sollte der Build nicht gerade
+heruntergeladen werden.
 
 ## Upload aus CI
 

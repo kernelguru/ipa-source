@@ -45,6 +45,8 @@ components:
         filename: {type: string}
         visible: {type: boolean}
         pinned: {type: boolean, description: "Not removed by retention"}
+        icon_injected: {type: boolean}
+        icon_state: {type: string, description: "'' | wartet | läuft | Fehler: …"}
         permissions: {type: object}
         download_url: {type: string}
     App:
@@ -60,6 +62,9 @@ components:
         category: {type: string, enum: [developer, entertainment, games, lifestyle, other, photo-video, social, utilities]}
         icon: {type: [string, "null"]}
         icon_url: {type: string, description: "External icon override"}
+        icon_status: {type: string, enum: [custom, external, ipa, blank, missing]}
+        icon_custom: {type: boolean}
+        auto_inject: {type: boolean, description: "Inject custom icon into new builds"}
         visible: {type: boolean}
         sort_order: {type: integer}
         screenshots: {type: array, items: {type: string}}
@@ -159,6 +164,37 @@ paths:
       parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
       requestBody: {content: {image/png: {schema: {type: string, format: binary}}}}
       responses: {"200": {description: OK}}
+  /apps/{id}/custom-icon:
+    parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+    put:
+      summary: Save designed icon (all sizes) and optionally inject it into builds
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                icon_1024: {type: string, format: binary}
+                icon_180: {type: string, format: binary}
+                icon_167: {type: string, format: binary}
+                icon_152: {type: string, format: binary}
+                icon_120: {type: string, format: binary}
+                icon_76: {type: string, format: binary}
+                inject: {type: string, enum: [none, all]}
+                auto_inject: {type: string, enum: ["0", "1"]}
+      responses: {"200": {description: App}}
+    delete: {summary: Remove custom icon (builds keep injected icons), responses: {"200": {description: App}}}
+  /apps/{id}/inject-icon:
+    post:
+      summary: Inject the custom icon into builds (background; watch builds[].icon_state)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody: {content: {application/json: {schema: {type: object, properties: {build_ids: {type: array, items: {type: integer}}}}}}}
+      responses: {"202": {description: Queued}}
+  /tools/fetch-image:
+    get:
+      summary: Fetch an image from the internet for the icon designer (max 15 MB)
+      parameters: [{name: url, in: query, required: true, schema: {type: string}}]
+      responses: {"200": {description: Image bytes}}
   /builds/{id}:
     parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
     patch:

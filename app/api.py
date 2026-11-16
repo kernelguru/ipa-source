@@ -5,6 +5,7 @@ import hmac
 import json
 import secrets
 import time
+import urllib.request
 import uuid
 
 from starlette.concurrency import run_in_threadpool
@@ -13,6 +14,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from . import auth, config, db, feed, github, store, sync, uploads
+from . import ipa as ipa_mod
 from .db import jloads
 
 
@@ -86,7 +88,7 @@ async def info(request):
         "version": config.VERSION,
         "api": config.API_VERSION,
         "setup_required": auth.user_count() == 0,
-        "features": ["github", "github_device_flow", "upload", "chunked_upload", "webdav", "webhook", "legacy_feed"],
+        "features": ["github", "github_device_flow", "upload", "chunked_upload", "icon_designer", "icon_inject", "webdav", "webhook", "legacy_feed"],
     })
 
 
@@ -244,7 +246,12 @@ def _app_json(a, request, with_builds=False):
         "screenshots": jloads(a["screenshots"], []),
         "entitlements": jloads(a["entitlements"], []),
         "privacy": jloads(a["privacy"], {}),
-        "icon": a["icon_url"] or (f"{pub}/icons/{a['id']}.png" if a["has_icon"] else None),
+        "icon": a["icon_url"] or (f"{pub}/icons/{a['id']}.png?v={a['updated_at'][:19].replace(':', '')}"
+                                  if a["has_icon"] else None),
+        "icon_status": ("custom" if a["icon_custom"] else "external" if a["icon_url"] else
+                        "blank" if a["has_icon"] and a["icon_blank"] else "ipa" if a["has_icon"] else "missing"),
+        "icon_custom": bool(a["icon_custom"]),
+        "auto_inject": bool(a["auto_inject"]),
         "build_count": len(builds),
         "latest": _build_json(builds[0], request) if builds else None,
     }
@@ -260,6 +267,8 @@ def _build_json(x, request):
                              "min_os", "size", "sha256", "date", "notes", "filename", "created_at")},
         "visible": bool(x["visible"]),
         "pinned": bool(x["pinned"]),
+        "icon_injected": bool(x["icon_injected"]),
+        "icon_state": x["icon_state"],
         "repo": src["repo"] if src else None,
         "permissions": jloads(x["permissions"], {}),
         "download_url": f"{feed.public_prefix(request)}/dl/{x['id']}/{x['filename']}",
@@ -290,7 +299,7 @@ async def app_detail(request):
             fields[k] = str(data[k] or "")
     if "category" in fields and fields["category"] not in feed.CATEGORIES:
         raise ApiError(400, "invalid", f"category muss einer von {', '.join(sorted(feed.CATEGORIES))} sein")
-    for k in ("visible",):
+    for k in ("visible", "auto_inject"):
         if k in data:
             fields[k] = b(data[k])
     if "sort_order" in data:
@@ -316,8 +325,83 @@ async def app_icon(request):
         raise ApiError(400, "invalid", "PNG erwartet")
     store.app_dir(a["bundle_id"]).mkdir(parents=True, exist_ok=True)
     store.icon_path(a["bundle_id"]).write_bytes(data)
-    db.execute("UPDATE apps SET has_icon = 1, icon_url = '', updated_at = ? WHERE id = ?", db.now(), aid)
+    db.execute("UPDATE apps SET has_icon = 1, icon_blank = 0, icon_url = '', updated_at = ? WHERE id = ?",
+               db.now(), aid)
     return JSONResponse(_app_json(db.one("SELECT * FROM apps WHERE id = ?", aid), request))
+
+
+@endpoint("full")
+async def app_custom_icon(request):
+    """
+    PUT multipart: icon_1024, icon_180, icon_167, icon_152, icon_120, icon_76 (PNG),
+                   inject=none|all, auto_inject=0|1
+    DELETE: drop the custom icon (feed falls back to the IPA icon; builds stay as they are)
+    """
+    aid = int(request.path_params["id"])
+    a = get_or_404("SELECT * FROM apps WHERE id = ?", aid)
+    if request.method == "DELETE":
+        await run_in_threadpool(store.remove_custom_icon, a)
+        return JSONResponse(_app_json(db.one("SELECT * FROM apps WHERE id = ?", aid), request, True))
+    form = await request.form(max_files=10, max_part_size=1024 * 1024)
+    pngs = {}
+    for px in ipa_mod.ICON_SIZES:
+        f = form.get(f"icon_{px}")
+        if f is None or not hasattr(f, "read"):
+            raise ApiError(400, "invalid", f"Feld icon_{px} fehlt")
+        pngs[px] = await f.read()
+    inject = str(form.get("inject") or "none")
+    auto = str(form.get("auto_inject") or "0") in ("1", "true", "on")
+    await form.close()
+    await run_in_threadpool(store.save_custom_icon, a, pngs)
+    db.execute("UPDATE apps SET auto_inject = ? WHERE id = ?", 1 if auto else 0, aid)
+    if inject == "all":
+        ids = [x["id"] for x in db.all_("SELECT id FROM builds WHERE app_id = ?", aid)]
+        store.queue_inject(ids)
+    return JSONResponse(_app_json(db.one("SELECT * FROM apps WHERE id = ?", aid), request, True))
+
+
+@endpoint("full")
+async def app_inject_icon(request):
+    """POST {build_ids?: [..]} – default: all builds of the app."""
+    aid = int(request.path_params["id"])
+    a = get_or_404("SELECT * FROM apps WHERE id = ?", aid)
+    if not a["icon_custom"]:
+        raise ApiError(400, "no_icon", "Zuerst ein eigenes Icon im Designer speichern")
+    data = {}
+    if await request.body():
+        data = await body(request)
+    rows = db.all_("SELECT id FROM builds WHERE app_id = ?", aid)
+    ids = [r["id"] for r in rows]
+    if data.get("build_ids"):
+        ids = [i for i in ids if i in set(map(int, data["build_ids"]))]
+    store.queue_inject(ids)
+    return JSONResponse({"queued": ids}, status_code=202)
+
+
+@endpoint("full")
+async def fetch_image(request):
+    """Server-side image fetch for the icon designer (avoids browser CORS limits)."""
+    url = request.query_params.get("url", "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        raise ApiError(400, "invalid", "Nur http(s)-URLs")
+
+    def get():
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 ipa-source",
+                                                   "Accept": "image/*"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            ctype = r.headers.get_content_type()
+            data = r.read(15 * 1024 * 1024 + 1)
+        return ctype, data
+
+    try:
+        ctype, data = await run_in_threadpool(get)
+    except Exception as e:
+        raise ApiError(502, "fetch_failed", f"Bild konnte nicht geladen werden: {e}")
+    if len(data) > 15 * 1024 * 1024:
+        raise ApiError(413, "too_large", "Bild größer als 15 MB")
+    if not ctype.startswith("image/"):
+        raise ApiError(415, "not_image", f"Keine Bilddatei ({ctype})")
+    return Response(data, media_type=ctype, headers={"Cache-Control": "no-store"})
 
 
 # ===================================================================== builds
@@ -683,6 +767,9 @@ def routes():
         Route(p + "/apps", apps, methods=["GET"]),
         Route(p + "/apps/{id:int}", app_detail, methods=["GET", "PATCH", "DELETE"]),
         Route(p + "/apps/{id:int}/icon", app_icon, methods=["PUT"]),
+        Route(p + "/apps/{id:int}/custom-icon", app_custom_icon, methods=["PUT", "DELETE"]),
+        Route(p + "/apps/{id:int}/inject-icon", app_inject_icon, methods=["POST"]),
+        Route(p + "/tools/fetch-image", fetch_image, methods=["GET"]),
         Route(p + "/builds/{id:int}", build_detail, methods=["PATCH", "DELETE"]),
         Route(p + "/sources", sources, methods=["GET", "POST"]),
         Route(p + "/sources/{id:int}", source_detail, methods=["GET", "PATCH", "DELETE"]),

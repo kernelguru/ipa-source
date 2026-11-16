@@ -177,6 +177,73 @@ def main():
         st, _ = call("POST", "/api/v1/uploads/sessions", {"filename": "x.ipa", "size": 10**15}, auth=f"Bearer {up_tok}")
         check(st == 507, "insufficient disk space detected")
 
+        # custom icon: blank detection, save, inject into all builds, auto-inject new builds
+        import struct, zlib, zipfile, plistlib
+
+        def png(px, rgb):
+            raw = (b"\0" + bytes(rgb) * px) * px
+            ch = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+            return (b"\x89PNG\r\n\x1a\n" + ch(b"IHDR", struct.pack(">IIBBBBB", px, px, 8, 2, 0, 0, 0))
+                    + ch(b"IDAT", zlib.compress(raw)) + ch(b"IEND", b""))
+
+        def blank_ipa(path, build):
+            with zipfile.ZipFile(path, "w") as z:
+                z.writestr("Payload/R.app/Info.plist", plistlib.dumps({
+                    "CFBundleIdentifier": "de.test.blank", "CFBundleDisplayName": "Blank", "CFBundleExecutable": "R",
+                    "CFBundleShortVersionString": "1.0", "CFBundleVersion": build,
+                    "CFBundleIcons": {"CFBundlePrimaryIcon": {"CFBundleIconFiles": ["AppIcon60x60"], "CFBundleIconName": "AppIcon"}}},
+                    fmt=plistlib.FMT_BINARY))
+                z.writestr("Payload/R.app/R", b"x")
+                z.writestr("Payload/R.app/AppIcon60x60@2x.png", png(120, (255, 255, 255)))
+
+        blank_ipa(tmp / "blank1.ipa", "1")
+        st, d = call("PUT", "/api/v1/uploads?filename=blank.ipa", raw=(tmp / "blank1.ipa").read_bytes(), auth=f"Bearer {up_tok}")
+        app_id = d["app"]["id"]
+        check(d["app"]["icon_status"] == "blank", "blank logo detected")
+
+        parts = []
+        for px in (1024, 180, 167, 152, 120, 76):
+            parts.append((f"icon_{px}", f"{px}.png", png(px, (200, 30, 30)), "image/png"))
+        parts += [("inject", None, b"all", None), ("auto_inject", None, b"1", None)]
+        bnd = "IcOn"
+        mp = b""
+        for name, fn, data, ctype in parts:
+            mp += f"--{bnd}\r\nContent-Disposition: form-data; name=\"{name}\"".encode()
+            if fn:
+                mp += f"; filename=\"{fn}\"\r\nContent-Type: {ctype}".encode()
+            mp += b"\r\n\r\n" + data + b"\r\n"
+        mp += f"--{bnd}--\r\n".encode()
+        st, d = call("PUT", f"/api/v1/apps/{app_id}/custom-icon", raw=mp,
+                     headers={"Content-Type": f"multipart/form-data; boundary={bnd}"})
+        check(st == 200 and d["icon_status"] == "custom" and d["auto_inject"], "custom icon saved")
+
+        def wait_injected(n):
+            for _ in range(40):
+                st, d = call("GET", f"/api/v1/apps/{app_id}")
+                if sum(b["icon_injected"] for b in d["builds"]) >= n and not any(b["icon_state"] for b in d["builds"]):
+                    return d
+                time.sleep(0.25)
+            return d
+        d = wait_injected(1)
+        check(all(b["icon_injected"] for b in d["builds"]), "icon injected into existing build")
+        st, blob = call("GET", d["builds"][0]["download_url"].replace(BASE, ""))
+        check(hashlib.sha256(blob).hexdigest() == d["builds"][0]["sha256"], "sha256 updated after injection")
+        (tmp / "dl.ipa").write_bytes(blob)
+        with zipfile.ZipFile(tmp / "dl.ipa") as z:
+            pl = plistlib.loads(z.read("Payload/R.app/Info.plist"))
+            ok = (z.testzip() is None and "CFBundleIconName" not in pl["CFBundleIcons"]["CFBundlePrimaryIcon"]
+                  and "Payload/R.app/AppIcon60x60@3x.png" in z.namelist())
+        check(ok, "downloaded IPA valid, plist patched, icons present")
+
+        blank_ipa(tmp / "blank2.ipa", "2")
+        call("PUT", "/api/v1/uploads?filename=blank2.ipa", raw=(tmp / "blank2.ipa").read_bytes(), auth=f"Bearer {up_tok}")
+        d = wait_injected(2)
+        check(len(d["builds"]) == 2 and all(b["icon_injected"] for b in d["builds"]), "new build auto-injected")
+        check(d["icon_status"] == "custom", "custom icon not overwritten by new build")
+
+        st, d = call("DELETE", f"/api/v1/apps/{app_id}/custom-icon")
+        check(d["icon_status"] in ("ipa", "blank") and not d["auto_inject"], "custom icon removed")
+
         print("\nAlle Tests bestanden.")
     finally:
         srv.terminate()

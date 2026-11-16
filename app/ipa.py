@@ -7,6 +7,8 @@ import zipfile
 import zlib
 from pathlib import Path
 
+from . import pngutil
+
 
 def log(msg):
     print(msg, flush=True)
@@ -201,3 +203,76 @@ class IpaInfo:
         self.permissions = plist.get("_permissions", {"entitlements": [], "privacy": {}})
         if not self.bundle_id:
             raise ValueError("IPA hat keine CFBundleIdentifier")
+        self.icon_blank = bool(self.icon) and pngutil.is_blank(self.icon)
+        self.asset_icon = any(
+            plist.get(k, {}).get("CFBundlePrimaryIcon", {}).get("CFBundleIconName")
+            for k in ("CFBundleIcons", "CFBundleIcons~ipad")
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Icon injection
+# --------------------------------------------------------------------------- #
+# file name in the .app  ->  pixel size
+ICON_FILES = {
+    "AppIcon60x60@2x.png": 120,
+    "AppIcon60x60@3x.png": 180,
+    "AppIcon60x60@2x~ipad.png": 120,
+    "AppIcon76x76~ipad.png": 76,
+    "AppIcon76x76@2x~ipad.png": 152,
+    "AppIcon83.5x83.5@2x~ipad.png": 167,
+}
+ICON_SIZES = sorted(set(ICON_FILES.values()) | {1024}, reverse=True)
+
+
+def _patch_plist(raw: bytes) -> bytes:
+    pl = plistlib.loads(raw)
+    fmt = plistlib.FMT_BINARY if raw.startswith(b"bplist") else plistlib.FMT_XML
+    # iPhone
+    icons = pl.setdefault("CFBundleIcons", {})
+    prim = icons.setdefault("CFBundlePrimaryIcon", {})
+    prim.pop("CFBundleIconName", None)          # stop using the asset catalog icon
+    prim["CFBundleIconFiles"] = ["AppIcon60x60"]
+    prim["UIPrerenderedIcon"] = False
+    # iPad
+    ipad = pl.setdefault("CFBundleIcons~ipad", {})
+    iprim = ipad.setdefault("CFBundlePrimaryIcon", {})
+    iprim.pop("CFBundleIconName", None)
+    iprim["CFBundleIconFiles"] = ["AppIcon60x60", "AppIcon76x76", "AppIcon83.5x83.5"]
+    # Legacy top-level key some tools still read
+    pl.pop("CFBundleIconName", None)
+    return plistlib.dumps(pl, fmt=fmt)
+
+
+def inject_icons(path: Path, pngs: dict):
+    """
+    Put icon PNGs into Payload/<App>.app and point Info.plist at them.
+
+    `pngs` maps pixel size -> PNG bytes (needs 76, 120, 152, 167, 180).
+    Works by appending to the ZIP and rewriting only the central directory, so the
+    cost does not depend on the IPA size. Replaced entries stay as dead bytes.
+    """
+    with zipfile.ZipFile(path, "a", allowZip64=True) as z:
+        names = z.namelist()
+        plist_name = next((n for n in names if re.match(r"^Payload/[^/]+\.app/Info\.plist$", n)), None)
+        if not plist_name:
+            raise ValueError("Keine Payload/*.app/Info.plist in der IPA")
+        prefix = plist_name.rsplit("/", 1)[0] + "/"
+        new_plist = _patch_plist(z.read(plist_name))
+        new_entries = {plist_name: new_plist}
+        for fname, px in ICON_FILES.items():
+            if px not in pngs:
+                raise ValueError(f"Icon in Größe {px} px fehlt")
+            new_entries[prefix + fname] = pngs[px]
+
+        # Drop the entries we replace from the central directory
+        replaced = set(new_entries)
+        z.filelist = [zi for zi in z.filelist if zi.filename not in replaced]
+        for n in replaced:
+            z.NameToInfo.pop(n, None)
+
+        for name, data in new_entries.items():
+            zi = zipfile.ZipInfo(name, date_time=__import__("time").localtime()[:6])
+            zi.compress_type = zipfile.ZIP_DEFLATED
+            zi.external_attr = 0o644 << 16
+            z.writestr(zi, data)

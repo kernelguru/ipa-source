@@ -99,6 +99,14 @@ SCHEMA = [
         message TEXT NOT NULL
     );
     """,
+    # v2: icon handling
+    """
+    ALTER TABLE apps ADD COLUMN icon_blank INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE apps ADD COLUMN icon_custom INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE apps ADD COLUMN auto_inject INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE builds ADD COLUMN icon_injected INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE builds ADD COLUMN icon_state TEXT NOT NULL DEFAULT '';
+    """,
 ]
 
 
