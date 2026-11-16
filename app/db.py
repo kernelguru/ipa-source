@@ -107,6 +107,44 @@ SCHEMA = [
     ALTER TABLE builds ADD COLUMN icon_injected INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE builds ADD COLUMN icon_state TEXT NOT NULL DEFAULT '';
     """,
+    # v3: server-side signing
+    """
+    CREATE TABLE IF NOT EXISTS certs (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        team_id TEXT NOT NULL DEFAULT '',
+        team_name TEXT NOT NULL DEFAULT '',
+        cert_cn TEXT NOT NULL DEFAULT '',
+        cert_expires TEXT NOT NULL DEFAULT '',
+        cert_type TEXT NOT NULL DEFAULT '',          -- development | distribution
+        profile_name TEXT NOT NULL DEFAULT '',
+        profile_uuid TEXT NOT NULL DEFAULT '',
+        profile_expires TEXT NOT NULL DEFAULT '',
+        profile_type TEXT NOT NULL DEFAULT '',       -- development | adhoc | enterprise | appstore
+        app_id TEXT NOT NULL DEFAULT '',             -- e.g. ABCDE12345.* or ABCDE12345.com.x.y
+        devices TEXT NOT NULL DEFAULT '[]',
+        entitlements TEXT NOT NULL DEFAULT '{}',
+        password_enc TEXT NOT NULL DEFAULT '',
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS signed (
+        id INTEGER PRIMARY KEY,
+        build_id INTEGER NOT NULL REFERENCES builds(id) ON DELETE CASCADE,
+        cert_id INTEGER NOT NULL REFERENCES certs(id) ON DELETE CASCADE,
+        bundle_id TEXT NOT NULL DEFAULT '',
+        build_sha256 TEXT NOT NULL DEFAULT '',
+        path TEXT NOT NULL DEFAULT '',
+        size INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'wartet',      -- wartet | läuft | fertig | fehler
+        error TEXT NOT NULL DEFAULT '',
+        log TEXT NOT NULL DEFAULT '',
+        token TEXT UNIQUE NOT NULL,
+        created_at TEXT NOT NULL,
+        finished_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS signed_build ON signed(build_id, cert_id);
+    """,
 ]
 
 

@@ -1,0 +1,3 @@
+#!/bin/sh
+case "$3" in validate) exit 0;; pair) echo "SUCCESS: Paired with device 00008110-001A2B3C4D5E801E"; exit 0;; esac
+exit 1

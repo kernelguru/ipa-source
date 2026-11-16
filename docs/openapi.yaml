@@ -283,6 +283,55 @@ paths:
       summary: Finish upload; import runs in background (poll GET)
       parameters: [{name: sid, in: path, required: true, schema: {type: string}}]
       responses: {"202": {description: Processing}, "400": {description: Incomplete}}
+  /certs:
+    get: {summary: "Signing certificates + server capabilities (zsign, ideviceinstaller, usbmuxd)", responses: {"200": {description: OK}}}
+    post:
+      summary: Add certificate (.p12 + password + .mobileprovision), validated
+      requestBody:
+        content:
+          multipart/form-data:
+            schema: {type: object, properties: {name: {type: string}, password: {type: string},
+                     p12: {type: string, format: binary}, profile: {type: string, format: binary}}}
+      responses: {"201": {description: Certificate}, "400": {description: Wrong password / profile mismatch / expired}}
+  /certs/{id}:
+    parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+    patch: {summary: "Rename or make default {name, is_default}", responses: {"200": {description: OK}}}
+    delete: {summary: Delete certificate and its signed IPAs, responses: {"200": {description: OK}}}
+  /builds/{id}/sign:
+    post:
+      summary: Sign a build with zsign (background); reuses an up-to-date signed copy
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody: {content: {application/json: {schema: {type: object, properties: {cert_id: {type: integer}, force: {type: boolean}}}}}}
+      responses: {"202": {description: "Signed record; poll GET /signed/{id} until status fertig | fehler"}}
+  /signed:
+    get:
+      summary: Signed IPAs
+      parameters: [{name: app_id, in: query, schema: {type: integer}}]
+      responses: {"200": {description: "status, install_page, itms_url, download_url, ota_ready"}}
+  /signed/{id}:
+    parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+    get:
+      summary: Signed IPA state (`?log=1` includes zsign output)
+      responses: {"200": {description: OK}}
+    delete: {summary: Delete signed copy, responses: {"200": {description: OK}}}
+  /signed/{id}/install-usb:
+    post:
+      summary: Install via USB (ideviceinstaller) to an attached, paired device
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody: {content: {application/json: {schema: {type: object, required: [udid], properties: {udid: {type: string}}}}}}
+      responses: {"202": {description: "Job {id, status, progress, message}"}}
+  /jobs/{jid}:
+    get:
+      summary: USB install job state
+      parameters: [{name: jid, in: path, required: true, schema: {type: string}}]
+      responses: {"200": {description: OK}}
+  /devices:
+    get: {summary: "Devices via usbmuxd {udid, name, ios, model, paired, connection}", responses: {"200": {description: OK}}}
+  /devices/{udid}/pair:
+    post:
+      summary: Pair with device (user taps Trust on the iPhone)
+      parameters: [{name: udid, in: path, required: true, schema: {type: string}}]
+      responses: {"200": {description: Paired}, "409": {description: Waiting for Trust / failed}}
   /webhooks/github:
     post:
       summary: GitHub webhook (release, workflow_run) – HMAC signed, public

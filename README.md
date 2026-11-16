@@ -17,6 +17,9 @@ verwaltet über ein Web-Admin mit REST-API.
 - **Icon-Designer**: Logo aus Datei, Zwischenablage oder Internet-URL, mit Hintergrund/Verlauf und Text/Emoji.
   Das Icon wird optional **direkt in die IPA eingebaut** (auch bei großen IPAs in Sekunden), automatisch auch in neue Builds.
   Leere oder fehlende Logos werden erkannt.
+- **Signieren & Installieren auf dem Server**: zsign signiert IPAs mit deinem Zertifikat (.p12 + Profil). Installation
+  direkt aus Safari per Link (OTA, `itms-services`) oder per USB an einem iPhone am Server (libimobiledevice). Damit
+  fallen Signier-Apps auf dem iPhone weg, auch bei IPAs mit mehreren GB.
 - **Webhook** für sofortigen Sync nach Release/Workflow-Run
 - **API-first** (`/api/v1`, Bearer-Tokens mit Scopes), damit eine iOS-App später dieselbe API nutzen kann.
   Spezifikation: [`docs/openapi.yaml`](docs/openapi.yaml)
@@ -91,6 +94,38 @@ Unter **Icon gestalten** baust du ein Icon und speicherst es:
 Hinweise: Alternative Icons der App bleiben unverändert. Bei einer bereits installierten App zeigt iOS das neue
 Icon manchmal erst nach einer Neuinstallation. Während das Icon eingebaut wird, sollte der Build nicht gerade
 heruntergeladen werden.
+
+## Signieren & Installieren
+
+Unter **Signieren & Installieren** ein Zertifikat hinterlegen: `.p12`, ihr Passwort und das passende
+`.mobileprovision`. Der Server prüft das Passwort und ob Zertifikat und Profil zusammenpassen.
+Das Passwort wird verschlüsselt in der Datenbank gespeichert, die Dateien liegen mit Rechten 600 unter
+`/data/certs`. Wer Zugriff auf das komplette Volume hat (inkl. `secret.key`), kann es entschlüsseln.
+
+Auf der App-Seite bei einem Build auf **Installieren** tippen. Der Server signiert mit zsign (1,5 GB in etwa 10 s,
+Stufe `SIGN_ZIP_LEVEL=0`). Passt die Bundle-ID nicht zur App-ID des Profils, wird sie automatisch angepasst.
+Danach gibt es zwei Wege:
+
+**1. Per Link (OTA):** Auf dem iPhone in Safari „Auf diesem Gerät installieren“ antippen, oder vom Rechner den Link
+`https://<host>/install/<token>` aufs iPhone schicken. iOS lädt die App selbst vom Server, ganz ohne Signier-App.
+Voraussetzungen:
+- `BASE_URL` mit `https://` und gültigem Zertifikat (Let's Encrypt reicht)
+- das iPhone muss im Provisioning-Profil stehen (Development/Ad Hoc), bei Enterprise-Profilen jedes Gerät
+- hinter Pangolin/Authelia o. ä. den Pfad **`/install/*`** ohne Login freigeben (Bypass-Regel). Die Links enthalten
+  einen geheimen Token.
+
+**2. Per USB:** iPhone an den Docker-Host anschließen.
+```bash
+apt install usbmuxd          # auf dem Host
+```
+In der `docker-compose.yml` `- /var/run/usbmuxd:/var/run/usbmuxd` aktivieren, Container neu starten.
+Unter *Signieren & Installieren → Geräte* erscheint das iPhone; einmal **Koppeln** und auf dem iPhone „Vertrauen“
+bestätigen. Danach bei einer signierten IPA „Per USB installieren“ wählen. Läuft Docker in einer VM oder einem LXC,
+muss das USB-Gerät dorthin durchgereicht werden. Alternativ `USBMUXD_EMBEDDED=1` mit
+`devices: ["/dev/bus/usb:/dev/bus/usb"]` und `privileged: true`. Dann läuft usbmuxd im Container, und die Kopplung
+liegt in `/data/lockdown`.
+
+Pro App und Zertifikat wird nur die neueste signierte Kopie aufbewahrt (`/data/signed`).
 
 ## Upload aus CI
 

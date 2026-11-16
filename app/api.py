@@ -13,7 +13,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from . import auth, config, db, feed, github, store, sync, uploads
+from . import auth, certs, config, db, feed, github, signing, store, sync, uploads
 from . import ipa as ipa_mod
 from .db import jloads
 
@@ -88,7 +88,7 @@ async def info(request):
         "version": config.VERSION,
         "api": config.API_VERSION,
         "setup_required": auth.user_count() == 0,
-        "features": ["github", "github_device_flow", "upload", "chunked_upload", "icon_designer", "icon_inject", "webdav", "webhook", "legacy_feed"],
+        "features": ["github", "github_device_flow", "upload", "chunked_upload", "icon_designer", "icon_inject", "server_signing", "ota_install", "usb_install", "webdav", "webhook", "legacy_feed"],
     })
 
 
@@ -719,6 +719,102 @@ async def upload_session_complete(request):
     return JSONResponse(_session_json(meta, request), status_code=202)
 
 
+# ==================================================================== signing
+@endpoint("full")
+async def certs_list(request):
+    if request.method == "GET":
+        return JSONResponse({"certs": [certs.public(c) for c in db.all_("SELECT * FROM certs ORDER BY id")],
+                             "capabilities": signing.capabilities()})
+    form = await request.form(max_files=2, max_part_size=1024 * 1024)
+    p12, prof = form.get("p12"), form.get("profile")
+    if not hasattr(p12, "read") or not hasattr(prof, "read"):
+        raise ApiError(400, "invalid", ".p12 und .mobileprovision sind nötig")
+    p12_data, prof_data = await p12.read(), await prof.read()
+    name, password = str(form.get("name") or ""), str(form.get("password") or "")
+    await form.close()
+    c = await run_in_threadpool(certs.add, name, p12_data, password, prof_data)
+    return JSONResponse(certs.public(c), status_code=201)
+
+
+@endpoint("full")
+async def cert_detail(request):
+    cid = int(request.path_params["id"])
+    c = get_or_404("SELECT * FROM certs WHERE id = ?", cid)
+    if request.method == "DELETE":
+        await run_in_threadpool(certs.remove, cid)
+        return JSONResponse({"ok": True})
+    data = await body(request)
+    if data.get("is_default"):
+        certs.set_default(cid)
+    if data.get("name"):
+        db.execute("UPDATE certs SET name = ? WHERE id = ?", str(data["name"]), cid)
+    return JSONResponse(certs.public(certs.get(cid)))
+
+
+@endpoint("full")
+async def build_sign(request):
+    """POST {cert_id?, force?} -> signed job (poll GET /signed/{id})."""
+    bid = int(request.path_params["id"])
+    get_or_404("SELECT id FROM builds WHERE id = ?", bid)
+    data = await body(request) if await request.body() else {}
+    cid = data.get("cert_id") or (certs.default() or {}).get("id")
+    if not cid:
+        raise ApiError(400, "no_cert", "Kein Signier-Zertifikat hinterlegt")
+    s = await run_in_threadpool(signing.request_sign, bid, int(cid), bool(data.get("force")))
+    return JSONResponse(signing.public(s, feed.base_url(request)), status_code=202)
+
+
+@endpoint("full")
+async def signed_list(request):
+    app_id = request.query_params.get("app_id")
+    sql = ("SELECT s.* FROM signed s JOIN builds b ON b.id = s.build_id "
+           + ("WHERE b.app_id = ? " if app_id else "") + "ORDER BY s.id DESC")
+    rows = db.all_(sql, int(app_id)) if app_id else db.all_(sql)
+    return JSONResponse({"signed": [signing.public(r, feed.base_url(request)) for r in rows]})
+
+
+@endpoint("full")
+async def signed_detail(request):
+    sid = int(request.path_params["id"])
+    s = get_or_404("SELECT * FROM signed WHERE id = ?", sid)
+    if request.method == "DELETE":
+        await run_in_threadpool(signing.delete_signed, sid)
+        return JSONResponse({"ok": True})
+    out = signing.public(s, feed.base_url(request))
+    if request.query_params.get("log"):
+        out["log"] = s["log"]
+    return JSONResponse(out)
+
+
+@endpoint("full")
+async def signed_install_usb(request):
+    sid = int(request.path_params["id"])
+    data = await body(request)
+    if not data.get("udid"):
+        raise ApiError(400, "invalid", "udid fehlt")
+    jid = await run_in_threadpool(signing.start_usb_install, sid, str(data["udid"]))
+    return JSONResponse(signing.job(jid), status_code=202)
+
+
+@endpoint("full")
+async def install_job(request):
+    j = signing.job(request.path_params["jid"])
+    if not j:
+        raise ApiError(404, "not_found", "Auftrag unbekannt (Server neu gestartet?)")
+    return JSONResponse(j)
+
+
+@endpoint("full")
+async def devices(request):
+    return JSONResponse(await run_in_threadpool(signing.devices))
+
+
+@endpoint("full")
+async def device_pair(request):
+    ok, msg = await run_in_threadpool(signing.pair, request.path_params["udid"])
+    return JSONResponse({"ok": ok, "message": msg}, status_code=200 if ok else 409)
+
+
 # ==================================================================== webhook
 @endpoint(None)
 async def webhook(request):
@@ -788,4 +884,13 @@ def routes():
         Route(p + "/uploads/sessions/{sid}", upload_session, methods=["GET", "PUT", "DELETE"]),
         Route(p + "/uploads/sessions/{sid}/complete", upload_session_complete, methods=["POST"]),
         Route(p + "/webhooks/github", webhook, methods=["POST"]),
+        Route(p + "/certs", certs_list, methods=["GET", "POST"]),
+        Route(p + "/certs/{id:int}", cert_detail, methods=["PATCH", "DELETE"]),
+        Route(p + "/builds/{id:int}/sign", build_sign, methods=["POST"]),
+        Route(p + "/signed", signed_list, methods=["GET"]),
+        Route(p + "/signed/{id:int}", signed_detail, methods=["GET", "DELETE"]),
+        Route(p + "/signed/{id:int}/install-usb", signed_install_usb, methods=["POST"]),
+        Route(p + "/jobs/{jid}", install_job, methods=["GET"]),
+        Route(p + "/devices", devices, methods=["GET"]),
+        Route(p + "/devices/{udid}/pair", device_pair, methods=["POST"]),
     ]

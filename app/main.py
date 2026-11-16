@@ -11,7 +11,7 @@ from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Re
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import api, auth, config, db, feed, store, sync, webdav
+from . import api, auth, config, db, feed, signing, store, sync, webdav
 
 STATIC = Path(__file__).parent / "static"
 
@@ -109,6 +109,66 @@ async def openapi(request: Request):
     return FileResponse(Path(__file__).parent.parent / "docs" / "openapi.yaml", media_type="application/yaml")
 
 
+# ------------------------------------------------------ OTA installation --
+def _signed_or_404(request):
+    s = signing.by_token(request.path_params["token"])
+    if not s or not (config.SIGNED_DIR / s["path"]).exists():
+        return None
+    return s
+
+
+def _fmt_size(n: int) -> str:
+    return f"{n / 2**30:.2f} GB" if n >= 2**30 else f"{n / 2**20:.0f} MB" if n >= 2**20 else f"{max(1, n // 1024)} KB"
+
+
+async def install_page(request: Request):
+    s = _signed_or_404(request)
+    if not s:
+        return Response("Link ungültig oder abgelaufen", status_code=404)
+    info = signing.public(s, feed.base_url(request))
+    import html as _h
+    e = _h.escape
+    https = info["ota_ready"]
+    body = f"""<!doctype html><html lang="de"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{e(info['app_name'])} installieren</title>
+<style>body{{font-family:-apple-system,system-ui,sans-serif;max-width:420px;margin:12vh auto;padding:0 20px;text-align:center;color:#111}}
+img{{width:110px;height:110px;border-radius:24px;box-shadow:0 4px 18px rgba(0,0,0,.2)}}
+a.b{{display:block;margin:22px 0 10px;padding:15px;border-radius:14px;background:#5c7aea;color:#fff;text-decoration:none;font-weight:600;font-size:17px}}
+.m{{color:#777;font-size:14px}} @media(prefers-color-scheme:dark){{body{{background:#000;color:#eee}}}}</style></head><body>
+<img src="/install/{e(s['token'])}/icon.png" alt="">
+<h2>{e(info['app_name'])}</h2><div class="m">Version {e(info['version'])} ({e(info['build_version'])}) · {_fmt_size(info['size'])}<br>signiert mit „{e(info['cert_name'])}“</div>
+{f'<a class="b" href="{e(info["itms_url"])}">Installieren</a>' if https else '<p><b>OTA-Installation braucht HTTPS.</b> Bitte BASE_URL auf https:// setzen.</p>'}
+<div class="m">Nach dem Tippen auf „Installieren“ fragt iOS nach – die App lädt dann im Hintergrund auf den Homescreen.
+Große Apps brauchen WLAN und etwas Geduld.</div>
+<p class="m"><a href="/install/{e(s['token'])}/app.ipa">IPA herunterladen</a></p></body></html>"""
+    return Response(body, media_type="text/html", headers={"Cache-Control": "no-store"})
+
+
+async def install_manifest(request: Request):
+    s = _signed_or_404(request)
+    if not s:
+        return Response(status_code=404)
+    return Response(signing.manifest(s, feed.base_url(request)), media_type="application/xml",
+                    headers={"Cache-Control": "no-store"})
+
+
+async def install_ipa(request: Request):
+    s = _signed_or_404(request)
+    if not s:
+        return Response(status_code=404)
+    return FileResponse(config.SIGNED_DIR / s["path"], media_type="application/octet-stream",
+                        filename=f"{s['bundle_id'] or 'app'}.ipa")
+
+
+async def install_icon(request: Request):
+    s = _signed_or_404(request)
+    b = db.one("SELECT app_id FROM builds WHERE id = ?", s["build_id"]) if s else None
+    a = db.one("SELECT * FROM apps WHERE id = ?", b["app_id"]) if b else None
+    if a and store.icon_path(a["bundle_id"]).exists():
+        return FileResponse(store.icon_path(a["bundle_id"]), media_type="image/png")
+    return Response(_default_icon(db.get_setting("feed_tint")), media_type="image/png")
+
+
 def public_routes(prefix=""):
     return [
         Route(prefix + "/apps.json", apps_json),
@@ -143,6 +203,10 @@ app = Starlette(
         *api.routes(),
         *public_routes(),
         *public_routes("/s/{key}"),
+        Route("/install/{token}", install_page),
+        Route("/install/{token}/manifest.plist", install_manifest),
+        Route("/install/{token}/app.ipa", install_ipa, methods=["GET", "HEAD"]),
+        Route("/install/{token}/icon.png", install_icon),
         Route("/dav", lambda r: RedirectResponse("/dav/", status_code=301), methods=["GET", "HEAD"]),
         Route("/dav/{path:path}", webdav.handler, methods=DAV_METHODS),
         Route("/dav", webdav.handler, methods=[m for m in DAV_METHODS if m not in ("GET", "HEAD")]),

@@ -197,6 +197,8 @@ def _scheduler():
             next_sync = time.time() + interval
         enqueue("inbox")
         try:
+            from . import signing
+            signing.cleanup_orphans()
             uploads.cleanup()
         except Exception as e:
             db.log_event("error", f"Upload-Aufräumen: {e}")

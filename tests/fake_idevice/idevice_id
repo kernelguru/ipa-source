@@ -1,0 +1,4 @@
+#!/bin/sh
+# fake libimobiledevice for tests
+[ "$1" = "-l" ] && echo "00008110-001A2B3C4D5E801E"
+exit 0

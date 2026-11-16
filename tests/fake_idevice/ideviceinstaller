@@ -1,0 +1,4 @@
+#!/bin/sh
+echo "Uploading $(basename "$4") package contents... DONE."
+for p in 5 15 40 60 90; do echo "Install: Step ($p%)"; sleep 0.2; done
+echo "Install: Complete"

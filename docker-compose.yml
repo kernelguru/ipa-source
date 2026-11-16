@@ -16,3 +16,6 @@ services:
       UPLOAD_CHUNK_MB: ${UPLOAD_CHUNK_MB:-32} # Teilgröße beim Upload über die Weboberfläche
     volumes:
       - ./data:/data
+      # USB-Installation (optional): usbmuxd auf dem Host installieren
+      # (apt install usbmuxd), iPhone per USB anschließen, dann diese Zeile aktivieren:
+      # - /var/run/usbmuxd:/var/run/usbmuxd

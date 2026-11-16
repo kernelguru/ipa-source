@@ -59,7 +59,7 @@ document.addEventListener("click", (e) => {
 // --------------------------------------------------------------- router --
 const routes = {
   apps: renderApps, app: renderApp, sources: renderSources, github: renderGithubRepos,
-  upload: renderUpload, feed: renderFeed, settings: renderSettings, log: renderLog, icon: renderIconDesigner,
+  upload: renderUpload, feed: renderFeed, settings: renderSettings, log: renderLog, icon: renderIconDesigner, signing: renderSigning,
 };
 let timer = null;
 async function route() {
@@ -162,7 +162,7 @@ async function renderApp(id) {
         <td class="small">${b.icon_state ? `<span class="badge ${b.icon_state.startsWith("Fehler") ? "err" : ""}" title="${esc(b.icon_state)}">${esc(b.icon_state.slice(0, 20))}</span>` : b.icon_injected ? '<span class="badge release">eingebaut</span>' : '<span class="muted">–</span>'}</td>
         <td><input type="checkbox" data-f="visible" ${b.visible ? "checked" : ""}></td>
         <td><input type="checkbox" data-f="pinned" ${b.pinned ? "checked" : ""} title="Wird von der Aufbewahrung nicht gelöscht"></td>
-        <td class="row" style="justify-content:flex-end"><a class="btn sm" href="${esc(b.download_url)}">Laden</a>
+        <td class="row" style="justify-content:flex-end"><button class="sm primary" data-sign>Installieren</button><a class="btn sm" href="${esc(b.download_url)}">Laden</a>
           <button class="sm" data-notes>Notizen</button><button class="sm danger" data-del>Löschen</button></td></tr>`).join("")}
       </tbody></table></div>
 
@@ -214,6 +214,7 @@ async function renderApp(id) {
     const bid = tr.dataset.id, b = a.builds.find((x) => String(x.id) === bid);
     $$("input[data-f]", tr).forEach((cb) => cb.onchange = guard(async () => { await api("PATCH", `/builds/${bid}`, { [cb.dataset.f]: cb.checked }); toast("Gespeichert"); }));
     $("[data-del]", tr).onclick = guard(async () => { if (!confirm("Build löschen?")) return; await api("DELETE", `/builds/${bid}`); renderApp(id); });
+    $("[data-sign]", tr).onclick = () => signFlow(b, a);
     $("[data-notes]", tr).onclick = () => modal(`<h2>Release-Notizen</h2><textarea name="notes" style="min-height:180px">${esc(b.notes)}</textarea>
       <div class="row" style="margin-top:12px"><button class="primary">Speichern</button><button value="cancel">Abbrechen</button></div>`,
       async (f) => { await api("PATCH", `/builds/${bid}`, { notes: f.get("notes") }); renderApp(id); });
@@ -313,6 +314,142 @@ async function renderGithubRepos() {
     await Promise.all(workers);
   };
   draw();
+}
+
+// ------------------------------------------------- signing & installing --
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const typeLabel = { development: "Development", adhoc: "Ad Hoc", enterprise: "Enterprise", appstore: "App Store", distribution: "Distribution" };
+
+async function signFlow(build, app) {
+  const { certs: list, capabilities: caps } = await api("GET", "/certs");
+  if (!caps.zsign) return toast("zsign ist auf dem Server nicht installiert – siehe README", true);
+  if (!list.length) {
+    if (confirm("Noch kein Signier-Zertifikat hinterlegt. Jetzt hinzufügen?")) location.hash = "#/signing";
+    return;
+  }
+  const form = modal(`<h2>${esc(app.name)} ${esc(build.version)} (${esc(build.build_version)})</h2>
+    <p class="muted small">Der Server signiert die IPA mit deinem Zertifikat. Danach installierst du sie direkt per Link auf dem iPhone oder per USB-Kabel am Server.</p>
+    ${list.length > 1 ? `<div><label>Zertifikat</label><select name="cert">${list.map((c) => `<option value="${c.id}" ${c.is_default ? "selected" : ""}>${esc(c.name)} – ${typeLabel[c.profile_type] || c.profile_type}${c.expired ? " (abgelaufen)" : ""}</option>`).join("")}</select></div>` : `<div class="muted small">Zertifikat: <b>${esc(list[0].name)}</b></div>`}
+    <div id="signstate" class="stack" style="margin-top:14px"></div>
+    <div class="row" style="margin-top:16px"><button class="primary" id="dosign">Signieren</button><button value="cancel">Schließen</button></div>`);
+  const stateEl = $("#signstate", form);
+  const poll = async (sid) => {
+    for (;;) {
+      const s = await api("GET", `/signed/${sid}`);
+      if (s.status === "fertig") { stateEl.innerHTML = await signedActions(s); bindSignedActions(stateEl, s); $("#dosign", form).hidden = true; return; }
+      if (s.status === "fehler") { stateEl.innerHTML = `<div><span class="badge err">Fehler</span> ${esc(s.error)}</div>`; $("#dosign", form).disabled = false; return; }
+      stateEl.innerHTML = `<div class="muted">${s.status === "wartet" ? "wartet …" : "wird signiert … (große Apps brauchen etwa 1 Minute pro 10 GB)"}</div><progress></progress>`;
+      if (!$("#modal").open) return;
+      await sleep(1500);
+    }
+  };
+  $("#dosign", form).onclick = guard(async (e) => {
+    e.preventDefault();
+    $("#dosign", form).disabled = true;
+    const cert = form.querySelector("[name=cert]")?.value;
+    const s = await api("POST", `/builds/${build.id}/sign`, cert ? { cert_id: +cert } : {});
+    poll(s.id);
+  });
+}
+
+async function signedActions(s) {
+  let devs = { devices: [] };
+  try { devs = await api("GET", "/devices"); } catch { /* */ }
+  const usable = devs.devices.filter((d) => d.paired);
+  return `<div><span class="badge release">signiert</span> <span class="muted small">${fmtSize(s.size)} · ${esc(s.cert_name)}${s.outdated ? ' · <b>veraltet</b> (Build wurde geändert)' : ""}</span></div>
+    ${s.ota_ready ? (isIOS
+      ? `<a class="btn primary" href="${esc(s.itms_url)}" style="justify-content:center">Auf diesem Gerät installieren</a>`
+      : `<div><label>Installationslink fürs iPhone (in Safari öffnen)</label>${copyBox(s.install_page)}</div>`)
+      : '<div class="small"><span class="badge err">kein HTTPS</span> Für die Installation per Link braucht der Server eine https://-Adresse (BASE_URL).</div>'}
+    ${usable.length ? `<div class="row"><select data-udid style="flex:1">${usable.map((d) => `<option value="${esc(d.udid)}">${esc(d.name || d.udid)} (iOS ${esc(d.ios)})</option>`).join("")}</select><button class="sm" data-usb>Per USB installieren</button></div><div data-usbstate></div>` : ""}
+    <div class="row"><a class="btn sm" href="${esc(s.download_url)}">Signierte IPA laden</a></div>`;
+}
+
+function bindSignedActions(el, s) {
+  const btn = $("[data-usb]", el);
+  if (!btn) return;
+  btn.onclick = guard(async (e) => {
+    e.preventDefault();
+    btn.disabled = true;
+    const st = $("[data-usbstate]", el);
+    let j = await api("POST", `/signed/${s.id}/install-usb`, { udid: $("[data-udid]", el).value });
+    while (j.status === "läuft") {
+      st.innerHTML = `<progress max="100" value="${j.progress || 0}"></progress><div class="small muted">${esc(j.message)}</div>`;
+      await sleep(1500);
+      j = await api("GET", `/jobs/${j.id}`);
+    }
+    st.innerHTML = j.status === "fertig" ? '<div>✓ Installiert</div>' : `<div><span class="badge err">Fehler</span> ${esc(j.message)}</div>`;
+    btn.disabled = false;
+  });
+}
+
+async function renderSigning() {
+  const [{ certs: list, capabilities: caps }, { signed }] = await Promise.all([api("GET", "/certs"), api("GET", "/signed")]);
+  let devs = { available: false, devices: [] };
+  try { devs = await api("GET", "/devices"); } catch { /* */ }
+  const now = new Date().toISOString();
+  view.innerHTML = `<div class="head"><div><h1>Signieren &amp; Installieren</h1>
+      <div class="muted">Der Server signiert IPAs selbst (zsign) und installiert sie per Link oder USB – ohne Signier-App auf dem iPhone.</div></div></div>
+    ${!caps.zsign ? '<div class="panel"><span class="badge err">zsign fehlt</span> Das Docker-Image ab Version 0.4 enthält zsign. Bitte Image aktualisieren.</div>' : ""}
+
+    <div class="panel"><div class="row spread"><h2>Zertifikate</h2><button class="primary sm" id="addcert">Zertifikat hinzufügen</button></div>
+      ${list.length ? `<table><thead><tr><th>Name</th><th>Typ</th><th>Gültig bis</th><th>Geräte</th><th></th></tr></thead><tbody>${list.map((c) => `<tr data-id="${c.id}">
+        <td><b>${esc(c.name)}</b> ${c.is_default ? '<span class="badge release">Standard</span>' : ""}<div class="muted small">${esc(c.cert_cn)}<br>Team ${esc(c.team_name || c.team_id)} · App-ID <span class="mono">${esc(c.app_id)}</span></div></td>
+        <td class="small">${typeLabel[c.profile_type] || esc(c.profile_type)}</td>
+        <td class="small">Zert.: ${fmtDate(c.cert_expires)}<br>Profil: ${fmtDate(c.profile_expires)} ${c.expired ? '<span class="badge err">abgelaufen</span>' : ""}</td>
+        <td class="small">${c.profile_type === "enterprise" ? "alle" : c.devices.length}</td>
+        <td class="row" style="justify-content:flex-end">${c.is_default ? "" : '<button class="sm" data-def>Als Standard</button>'}<button class="sm danger" data-del>Löschen</button></td></tr>`).join("")}</tbody></table>`
+        : '<div class="muted">Noch kein Zertifikat. Du brauchst die .p12-Datei, ihr Passwort und das passende Provisioning-Profil (.mobileprovision).</div>'}
+      <div class="muted small" style="margin-top:10px">Das Passwort wird verschlüsselt gespeichert; die Dateien liegen nur auf deinem Server (<code>/data/certs</code>).</div></div>
+
+    <div class="panel"><div class="row spread"><h2>Geräte per USB</h2><button class="sm" id="refreshdev">Aktualisieren</button></div>
+      ${!devs.available ? '<div class="muted small">libimobiledevice ist nicht verfügbar. Für USB-Installation das iPhone an den Docker-Host anschließen und den usbmuxd-Socket in den Container einbinden (siehe README).</div>'
+        : devs.devices.length ? `<table><tbody>${devs.devices.map((d) => `<tr data-udid="${esc(d.udid)}"><td><b>${esc(d.name || "Unbekanntes Gerät")}</b><div class="muted small mono">${esc(d.udid)}</div></td>
+            <td class="small">${d.ios ? "iOS " + esc(d.ios) : ""} ${esc(d.model)}</td><td><span class="badge">${d.connection === "usb" ? "USB" : "WLAN"}</span></td>
+            <td style="text-align:right">${d.paired ? '<span class="badge release">gekoppelt</span>' : '<button class="sm primary" data-pair>Koppeln</button>'}</td></tr>`).join("")}</tbody></table>`
+        : `<div class="muted small">Kein iPhone gefunden. Per USB anschließen und entsperren.${devs.usbmuxd ? "" : " (usbmuxd-Socket nicht eingebunden)"}</div>`}</div>
+
+    <div class="panel"><h2>Signierte IPAs</h2>
+      ${signed.length ? `<table><thead><tr><th>App</th><th>Zertifikat</th><th>Status</th><th></th></tr></thead><tbody>${signed.map((x) => `<tr data-sid="${x.id}">
+        <td><a href="#/app/${x.app_id}"><b>${esc(x.app_name)}</b></a> ${esc(x.version)} (${esc(x.build_version)})<div class="muted small">${fmtDate(x.finished_at || x.created_at)}${x.size ? " · " + fmtSize(x.size) : ""}</div></td>
+        <td class="small">${esc(x.cert_name)}</td>
+        <td>${x.status === "fertig" ? `<span class="badge release">bereit</span>${x.outdated ? ' <span class="badge">veraltet</span>' : ""}` : x.status === "fehler" ? `<span class="badge err" title="${esc(x.error)}">Fehler</span>` : `<span class="badge">${esc(x.status)}</span>`}</td>
+        <td class="row" style="justify-content:flex-end">${x.status === "fertig" ? '<button class="sm primary" data-inst>Installieren</button>' : ""}${x.status === "fehler" ? '<button class="sm" data-log>Log</button>' : ""}<button class="sm danger" data-sdel>Löschen</button></td></tr>`).join("")}</tbody></table>`
+        : '<div class="muted small">Noch nichts signiert. Auf der App-Seite bei einem Build auf „Installieren“ tippen.</div>'}
+      <div class="muted small" style="margin-top:10px">Pro App und Zertifikat wird nur die neueste signierte Kopie aufbewahrt.</div></div>`;
+
+  $("#addcert").onclick = () => modal(`<h2>Signier-Zertifikat hinzufügen</h2><div class="form">
+      <div class="full"><label>Name (optional)</label><input name="name" placeholder="z. B. Developer Marc"></div>
+      <div class="full"><label>Zertifikat (.p12)</label><input type="file" name="p12" accept=".p12,.pfx,application/x-pkcs12" required></div>
+      <div class="full"><label>Passwort der .p12</label><input type="password" name="password" autocomplete="off"></div>
+      <div class="full"><label>Provisioning-Profil (.mobileprovision)</label><input type="file" name="profile" accept=".mobileprovision" required></div></div>
+      <div class="row" style="margin-top:16px"><button class="primary">Prüfen &amp; speichern</button><button value="cancel">Abbrechen</button></div>`,
+    async (f) => { await api("POST", "/certs", f); toast("Zertifikat gespeichert"); renderSigning(); });
+  $("#refreshdev").onclick = guard(renderSigning);
+  $$("tr[data-id]").forEach((tr) => {
+    const id = tr.dataset.id;
+    $("[data-def]", tr)?.addEventListener("click", guard(async () => { await api("PATCH", `/certs/${id}`, { is_default: true }); renderSigning(); }));
+    $("[data-del]", tr).onclick = guard(async () => { if (!confirm("Zertifikat und alle damit signierten IPAs löschen?")) return; await api("DELETE", `/certs/${id}`); renderSigning(); });
+  });
+  $$("tr[data-udid]").forEach((tr) => {
+    $("[data-pair]", tr)?.addEventListener("click", guard(async () => {
+      toast("Bitte auf dem iPhone „Vertrauen“ antippen …");
+      const r = await fetch(`/api/v1/devices/${encodeURIComponent(tr.dataset.udid)}/pair`, { method: "POST", headers: { "X-Requested-With": "ipa-source" } });
+      const d = await r.json(); toast(d.message || d?.error?.message, !d.ok); renderSigning();
+    }));
+  });
+  $$("tr[data-sid]").forEach((tr) => {
+    const x = signed.find((y) => String(y.id) === tr.dataset.sid);
+    $("[data-inst]", tr)?.addEventListener("click", guard(async () => {
+      const form = modal(`<h2>${esc(x.app_name)} ${esc(x.version)} installieren</h2><div id="sa" class="stack"></div><div class="row" style="margin-top:16px"><button value="cancel">Schließen</button></div>`);
+      const el = $("#sa", form); el.innerHTML = await signedActions(x); bindSignedActions(el, x);
+    }));
+    $("[data-log]", tr)?.addEventListener("click", guard(async () => {
+      const d = await api("GET", `/signed/${x.id}?log=1`);
+      modal(`<h2>zsign-Log</h2><pre class="mono small" style="max-height:50vh;overflow:auto;white-space:pre-wrap">${esc(d.log || d.error)}</pre><div class="row"><button value="cancel">Schließen</button></div>`);
+    }));
+    $("[data-sdel]", tr).onclick = guard(async () => { await api("DELETE", `/signed/${x.id}`); renderSigning(); });
+  });
 }
 
 // --------------------------------------------------------- icon designer --

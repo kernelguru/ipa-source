@@ -1,0 +1,3 @@
+#!/bin/sh
+for a in "$@"; do last=$a; done
+case "$last" in DeviceName) echo "Marcs iPhone";; ProductVersion) echo "26.1";; ProductType) echo "iPhone16,2";; esac
