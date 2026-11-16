@@ -14,6 +14,8 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-0} # 1 hinter HTTPS
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-0}      # 0 = unbegrenzt (nur freier Speicher zählt)
       UPLOAD_CHUNK_MB: ${UPLOAD_CHUNK_MB:-32} # Teilgröße beim Upload über die Weboberfläche
+      # USB über Windows (Docker in Hyper-V-VM): Apple Mobile Device Service per TCP, siehe README
+      USBMUXD_SOCKET_ADDRESS: ${USBMUXD_SOCKET_ADDRESS:-}
     volumes:
       - ./data:/data
       # USB-Installation (optional): usbmuxd auf dem Host installieren

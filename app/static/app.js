@@ -407,7 +407,7 @@ async function renderSigning() {
         : devs.devices.length ? `<table><tbody>${devs.devices.map((d) => `<tr data-udid="${esc(d.udid)}"><td><b>${esc(d.name || "Unbekanntes Gerät")}</b><div class="muted small mono">${esc(d.udid)}</div></td>
             <td class="small">${d.ios ? "iOS " + esc(d.ios) : ""} ${esc(d.model)}</td><td><span class="badge">${d.connection === "usb" ? "USB" : "WLAN"}</span></td>
             <td style="text-align:right">${d.paired ? '<span class="badge release">gekoppelt</span>' : '<button class="sm primary" data-pair>Koppeln</button>'}</td></tr>`).join("")}</tbody></table>`
-        : `<div class="muted small">Kein iPhone gefunden. Per USB anschließen und entsperren.${devs.usbmuxd ? "" : " (usbmuxd-Socket nicht eingebunden)"}</div>`}</div>
+        : `<div class="muted small">Kein iPhone gefunden. Per USB anschließen und entsperren.${devs.usbmuxd ? (devs.usbmuxd_remote ? ` (verbunden mit ${esc(devs.usbmuxd_remote)})` : "") : " (usbmuxd nicht eingebunden – Socket mounten oder USBMUXD_SOCKET_ADDRESS setzen)"}</div>`}</div>
 
     <div class="panel"><h2>Signierte IPAs</h2>
       ${signed.length ? `<table><thead><tr><th>App</th><th>Zertifikat</th><th>Status</th><th></th></tr></thead><tbody>${signed.map((x) => `<tr data-sid="${x.id}">

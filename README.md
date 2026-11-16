@@ -125,6 +125,17 @@ muss das USB-Gerät dorthin durchgereicht werden. Alternativ `USBMUXD_EMBEDDED=1
 `devices: ["/dev/bus/usb:/dev/bus/usb"]` und `privileged: true`. Dann läuft usbmuxd im Container, und die Kopplung
 liegt in `/data/lockdown`.
 
+**Docker in einer Hyper-V-VM (Windows-Host):** Hyper-V reicht USB nicht durch. Zwei Wege:
+- *usbipd-win*: Auf Windows `usbipd bind --busid <ID>`, in der VM `usbip attach -r <Windows-IP> -b <ID>`
+  (Paket `usbip`/`linux-tools`, Modul `vhci-hcd`). Danach usbmuxd in der VM wie oben.
+- *Apple Mobile Device Service* (kommt mit iTunes oder der App „Apple Geräte“): Er lauscht auf `127.0.0.1:27015`.
+  Auf Windows nur für die VM weiterleiten, z. B.
+  `netsh interface portproxy add v4tov4 listenaddress=<Windows-IP Richtung VM> listenport=27015 connectaddress=127.0.0.1 connectport=27015`,
+  dazu eine Firewall-Regel nur für die VM-IP. Im Container dann `USBMUXD_SOCKET_ADDRESS=<Windows-IP>:27015` setzen.
+  **Den Port nie im ganzen LAN öffnen**, sonst kann jeder im Netz auf das angeschlossene iPhone zugreifen.
+
+Ohne USB funktioniert immer die Installation per Link (OTA).
+
 Pro App und Zertifikat wird nur die neueste signierte Kopie aufbewahrt (`/data/signed`).
 
 ## Upload aus CI

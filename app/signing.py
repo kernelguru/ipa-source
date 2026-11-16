@@ -40,7 +40,10 @@ def capabilities():
     return {
         "zsign": bool(zsign_path()),
         "ideviceinstaller": bool(shutil.which(config.IDEVICEINSTALLER_BIN) or tool("ideviceinstaller")),
-        "usbmuxd": os.path.exists("/var/run/usbmuxd"),
+        # local socket (host usbmuxd mounted / embedded) or remote usbmuxd, e.g. Apple Mobile
+        # Device Service on Windows: USBMUXD_SOCKET_ADDRESS=192.168.1.10:27015
+        "usbmuxd": os.path.exists("/var/run/usbmuxd") or bool(os.environ.get("USBMUXD_SOCKET_ADDRESS")),
+        "usbmuxd_remote": os.environ.get("USBMUXD_SOCKET_ADDRESS", ""),
     }
 
 
