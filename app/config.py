@@ -25,7 +25,8 @@ GITHUB_TOKEN_ENV = os.environ.get("GITHUB_TOKEN", "").strip()
 # Set to "1" behind HTTPS so session cookies get the Secure flag
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "0") == "1"
 
-MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "2048")) * 1024 * 1024
+# 0 = unlimited (only free disk space counts)
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "0")) * 1024 * 1024
 
 
 def ensure_dirs():

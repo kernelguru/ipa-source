@@ -216,6 +216,37 @@ paths:
         - {name: visible, in: query, schema: {type: string, enum: ["0", "1"]}}
       requestBody: {content: {application/octet-stream: {schema: {type: string, format: binary}}}}
       responses: {"201": {description: Imported}}
+  /uploads/sessions:
+    post:
+      summary: Start a resumable chunked upload – scope upload
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object, required: [filename, size], properties: {
+              filename: {type: string}, size: {type: integer, format: int64},
+              notes: {type: string}, visible: {type: boolean, default: true}}}
+      responses:
+        "201": {description: "Session: {id, chunk_size, received, status}"}
+        "413": {description: Above MAX_UPLOAD_MB}
+        "507": {description: Not enough disk space}
+  /uploads/sessions/{sid}:
+    parameters: [{name: sid, in: path, required: true, schema: {type: string}}]
+    get:
+      summary: "Session state – status: uploading | processing | done | error; build/app when done"
+      responses: {"200": {description: OK}}
+    put:
+      summary: Append a chunk at `offset` (must equal `received`)
+      parameters: [{name: offset, in: query, required: true, schema: {type: integer, format: int64}}]
+      requestBody: {content: {application/octet-stream: {schema: {type: string, format: binary}}}}
+      responses:
+        "200": {description: "{received, size}"}
+        "409": {description: "Wrong offset – body contains `received` to resume from"}
+    delete: {summary: Abort and delete, responses: {"200": {description: OK}}}
+  /uploads/sessions/{sid}/complete:
+    post:
+      summary: Finish upload; import runs in background (poll GET)
+      parameters: [{name: sid, in: path, required: true, schema: {type: string}}]
+      responses: {"202": {description: Processing}, "400": {description: Incomplete}}
   /webhooks/github:
     post:
       summary: GitHub webhook (release, workflow_run) – HMAC signed, public

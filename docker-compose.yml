@@ -12,6 +12,7 @@ services:
       ADMIN_USER: ${ADMIN_USER:-}        # optional: Admin beim ersten Start anlegen
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-0} # 1 hinter HTTPS
-      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-2048}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-0}      # 0 = unbegrenzt (nur freier Speicher zählt)
+      UPLOAD_CHUNK_MB: ${UPLOAD_CHUNK_MB:-32} # Teilgröße beim Upload über die Weboberfläche
     volumes:
       - ./data:/data

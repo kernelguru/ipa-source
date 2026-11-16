@@ -8,7 +8,7 @@ import uuid
 import zipfile
 from pathlib import Path
 
-from . import config, db, github, store
+from . import config, db, github, store, uploads
 
 _queue: "queue.Queue[tuple]" = queue.Queue()
 _state = {"running": None, "queued": 0, "last_full_sync": None}
@@ -196,6 +196,10 @@ def _scheduler():
             enqueue("all")
             next_sync = time.time() + interval
         enqueue("inbox")
+        try:
+            uploads.cleanup()
+        except Exception as e:
+            db.log_event("error", f"Upload-Aufräumen: {e}")
         _wakeup.wait(10)
         _wakeup.clear()
 
@@ -204,5 +208,6 @@ def start():
     for d in config.TMP_DIR.glob("*"):
         if d.is_file():
             d.unlink(missing_ok=True)
+    uploads.resume_pending()
     threading.Thread(target=_worker, daemon=True, name="worker").start()
     threading.Thread(target=_scheduler, daemon=True, name="scheduler").start()

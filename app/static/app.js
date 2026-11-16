@@ -298,7 +298,7 @@ async function renderGithubRepos() {
 function renderUpload() {
   view.innerHTML = `<div class="head"><div><h1>Upload</h1><div class="muted">IPAs direkt hochladen – Bundle-ID, Version und Icon werden automatisch gelesen.</div></div></div>
     <div class="panel"><label class="drop" id="drop"><input type="file" accept=".ipa" multiple hidden id="files">
-      <div style="font-size:1.1rem;font-weight:600">IPA hierher ziehen oder klicken</div><div class="muted small">mehrere Dateien möglich</div></label>
+      <div style="font-size:1.1rem;font-weight:600">IPA hierher ziehen oder klicken</div><div class="muted small">mehrere Dateien möglich · große Dateien werden in Teilen übertragen und lassen sich nach Abbruch fortsetzen (Datei einfach erneut wählen)</div></label>
       <div style="margin-top:14px"><label>Release-Notizen (optional, für alle Dateien)</label><input id="notes"></div></div>
     <div id="results" class="stack"></div>`;
   const drop = $("#drop");
@@ -309,27 +309,89 @@ function renderUpload() {
   drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); handle(e.dataTransfer.files); };
 }
 
+// Chunked, resumable upload: survives proxy limits, flaky Wi-Fi and page reloads
+const sessKey = (f) => `ipas-upload:${f.name}:${f.size}:${f.lastModified}`;
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch { /* */ } };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 function uploadOne(file) {
   const row = document.createElement("div");
   row.className = "panel";
-  row.innerHTML = `<div class="row spread"><b>${esc(file.name)}</b><span class="muted small">${fmtSize(file.size)}</span></div><progress max="100" value="0"></progress><div class="small muted" data-s>lädt …</div>`;
+  row.innerHTML = `<div class="row spread"><b>${esc(file.name)}</b><span class="muted small">${fmtSize(file.size)}</span></div>
+    <progress max="100" value="0"></progress>
+    <div class="row spread"><div class="small muted" data-s>startet …</div><div class="row">
+      <button class="sm" data-resume hidden>Fortsetzen</button><button class="sm danger" data-cancel>Abbrechen</button></div></div>`;
   $("#results").prepend(row);
-  const fd = new FormData();
-  fd.append("file", file); fd.append("notes", $("#notes").value);
-  const xhr = new XMLHttpRequest();
-  xhr.open("POST", "/api/v1/uploads");
-  xhr.setRequestHeader("X-Requested-With", "ipa-source");
-  xhr.upload.onprogress = (e) => { if (e.lengthComputable) $("progress", row).value = (e.loaded / e.total) * 100; };
-  xhr.onload = () => {
-    let d = {}; try { d = JSON.parse(xhr.responseText); } catch { /* */ }
-    if (xhr.status === 201) {
-      $("[data-s]", row).innerHTML = `✓ <a href="#/app/${d.app.id}">${esc(d.app.name)}</a> ${esc(d.build.version)} (${esc(d.build.build_version)}) importiert`;
-    } else {
-      $("[data-s]", row).innerHTML = `<span class="badge err">Fehler</span> ${esc(d?.error?.message || xhr.statusText)}`;
-    }
+  const status = (h) => { $("[data-s]", row).innerHTML = h; };
+  const bar = $("progress", row);
+  let cancelled = false, sid = null;
+
+  $("[data-cancel]", row).onclick = async () => {
+    cancelled = true;
+    if (sid) { await api("DELETE", `/uploads/sessions/${sid}`).catch(() => {}); lsSet(sessKey(file), null); }
+    status("abgebrochen"); $("[data-cancel]", row).hidden = true; $("[data-resume]", row).hidden = true;
   };
-  xhr.onerror = () => { $("[data-s]", row).textContent = "Netzwerkfehler"; };
-  xhr.send(fd);
+  $("[data-resume]", row).onclick = () => { $("[data-resume]", row).hidden = true; run(); };
+
+  async function run() {
+    try {
+      // 1) find or create the session
+      let sess = null;
+      sid = lsGet(sessKey(file));
+      if (sid) sess = await api("GET", `/uploads/sessions/${sid}`).catch(() => null);
+      if (!sess || sess.status === "error") {
+        sess = await api("POST", "/uploads/sessions", { filename: file.name, size: file.size, notes: $("#notes").value });
+        sid = sess.id; lsSet(sessKey(file), sid);
+      } else if (sess.received) {
+        status(`setze bei ${fmtSize(sess.received)} fort …`);
+      }
+      // 2) send chunks
+      let offset = sess.received || 0;
+      const chunk = sess.chunk_size || 32 * 1024 * 1024;
+      const t0 = Date.now(), start = offset;
+      while (offset < file.size && sess.status === "uploading") {
+        if (cancelled) return;
+        const blob = file.slice(offset, Math.min(offset + chunk, file.size));
+        let tries = 0;
+        for (;;) {
+          const res = await fetch(`/api/v1/uploads/sessions/${sid}?offset=${offset}`, {
+            method: "PUT", headers: { "X-Requested-With": "ipa-source" }, body: blob, credentials: "same-origin",
+          }).catch(() => null);
+          if (res && res.ok) { offset = (await res.json()).received; break; }
+          if (res && res.status === 409) { offset = (await res.json()).received; break; }   // server knows better
+          if (res && res.status < 500 && res.status !== 408 && res.status !== 429) {
+            const d = await res.json().catch(() => ({}));
+            throw new Error(d?.error?.message || `HTTP ${res.status}`);
+          }
+          if (++tries > 6) throw new Error("Verbindung mehrfach abgebrochen");
+          status(`Verbindungsfehler – neuer Versuch ${tries}/6 …`);
+          await sleep(Math.min(30000, 1000 * 2 ** tries));
+        }
+        bar.value = (offset / file.size) * 100;
+        const rate = (offset - start) / Math.max(1, (Date.now() - t0) / 1000);
+        const eta = rate > 0 ? Math.round((file.size - offset) / rate) : 0;
+        status(`${fmtSize(offset)} von ${fmtSize(file.size)} · ${fmtSize(rate)}/s · noch ca. ${eta > 90 ? Math.round(eta / 60) + " min" : eta + " s"}`);
+      }
+      // 3) finish + wait for import
+      status("wird verarbeitet (Prüfsumme, Metadaten) …");
+      sess = await api("POST", `/uploads/sessions/${sid}/complete`);
+      while (sess.status === "processing") { await sleep(2000); sess = await api("GET", `/uploads/sessions/${sid}`); }
+      lsSet(sessKey(file), null);
+      $("[data-cancel]", row).hidden = true;
+      if (sess.status === "done") {
+        bar.value = 100;
+        status(`✓ <a href="#/app/${sess.app.id}">${esc(sess.app.name)}</a> ${esc(sess.build.version)} (${esc(sess.build.build_version)}) importiert`);
+      } else {
+        status(`<span class="badge err">Fehler</span> ${esc(sess.error)}`);
+      }
+    } catch (e) {
+      if (cancelled) return;
+      status(`<span class="badge err">Unterbrochen</span> ${esc(e.message)}`);
+      $("[data-resume]", row).hidden = false;
+    }
+  }
+  run();
 }
 
 // ----------------------------------------------------------------- feed --

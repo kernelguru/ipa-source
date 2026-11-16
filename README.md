@@ -6,7 +6,7 @@ verwaltet über ein Web-Admin mit REST-API.
 
 - **GitHub-Quellen:** Releases und/oder Actions-Artefakte. Über einen Token oder GitHub-Login (Device Flow) verbunden,
   Repos werden aufgelistet und auf IPAs gescannt.
-- **Upload** per Drag & Drop im Browser oder per `curl` aus CI
+- **Upload** per Drag & Drop im Browser (in Teilen, fortsetzbar, auch für IPAs mit mehreren GB) oder per `curl` aus CI
 - **WebDAV** unter `/dav/`: IPA hineinziehen → Import; jede App ist ein Ordner mit ihren Builds
 - **Feeds**: `apps.json` (AltStore-Spezifikation 2.0) und `apps-legacy.json` (strenge Parser wie
   KravaSign/ESign). Optional privat über einen geheimen Schlüssel in der URL.
@@ -62,6 +62,16 @@ Version und Build kommen immer aus der `Info.plist` der IPA (`CFBundleShortVersi
 `CFBundleVersion`). Gibt es gleiche Version + Build mehrfach, gilt die Priorität Release > Upload/WebDAV > Artefakt.
 Für CI-Builds die Build-Nummer hochzählen, z. B.
 `xcodebuild … CURRENT_PROJECT_VERSION=${{ github.run_number }}`.
+
+## Große Dateien
+
+Uploads über die Weboberfläche laufen in Teilen (Standard 32 MB, `UPLOAD_CHUNK_MB`). Dadurch
+stören Body-Limits und Timeouts des Reverse-Proxys nicht, und ein abgebrochener Upload
+lässt sich fortsetzen. Dafür einfach dieselbe Datei erneut wählen. Ein Größenlimit gibt es standardmäßig nicht
+(`MAX_UPLOAD_MB=0`), geprüft wird nur der freie Speicherplatz.
+
+Native Clients nutzen dieselbe API: `POST /api/v1/uploads/sessions` → `PUT …/{id}?offset=N` pro Teil
+→ `POST …/{id}/complete` → `GET …/{id}` bis `status` `done` ist (siehe `docs/openapi.yaml`).
 
 ## Upload aus CI
 

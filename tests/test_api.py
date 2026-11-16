@@ -148,6 +148,35 @@ def main():
         st, feed = call("GET", "/apps.json")
         alpha = next(a for a in feed["apps"] if a["bundleIdentifier"] == "de.test.a")
         check(len(alpha["versions"]) == 1, "hidden build excluded from feed")
+        # chunked upload: resume after wrong offset, complete, poll
+        data = (tmp / "b.ipa").read_bytes()
+        make(tmp / "c.ipa", "de.test.c", "5.0", "50", "Gamma")
+        data = (tmp / "c.ipa").read_bytes()
+        st, sess = call("POST", "/api/v1/uploads/sessions", {"filename": "c.ipa", "size": len(data)}, auth=f"Bearer {up_tok}")
+        check(st == 201 and sess["received"] == 0, "chunk session created")
+        sid, half = sess["id"], len(data) // 2
+        st, d = call("PUT", f"/api/v1/uploads/sessions/{sid}?offset=0", raw=data[:half], auth=f"Bearer {up_tok}")
+        check(st == 200 and d["received"] == half, "first chunk")
+        st, d = call("PUT", f"/api/v1/uploads/sessions/{sid}?offset=0", raw=data[:half], auth=f"Bearer {up_tok}")
+        check(st == 409 and d["received"] == half, "duplicate chunk -> 409 with resume offset")
+        st, d = call("POST", f"/api/v1/uploads/sessions/{sid}/complete", auth=f"Bearer {up_tok}")
+        check(st == 400, "complete refused while incomplete")
+        st, d = call("PUT", f"/api/v1/uploads/sessions/{sid}?offset={half}", raw=data[half:] + b"x", auth=f"Bearer {up_tok}")
+        check(st == 400, "more data than announced rejected")
+        st, d = call("GET", f"/api/v1/uploads/sessions/{sid}", auth=f"Bearer {up_tok}")
+        check(d["received"] == half, "failed chunk left no partial data")
+        st, d = call("PUT", f"/api/v1/uploads/sessions/{sid}?offset={half}", raw=data[half:], auth=f"Bearer {up_tok}")
+        st, d = call("POST", f"/api/v1/uploads/sessions/{sid}/complete", auth=f"Bearer {up_tok}")
+        check(st == 202, "complete accepted")
+        for _ in range(40):
+            st, d = call("GET", f"/api/v1/uploads/sessions/{sid}", auth=f"Bearer {up_tok}")
+            if d["status"] != "processing":
+                break
+            time.sleep(0.25)
+        check(d["status"] == "done" and d["build"]["version"] == "5.0", "chunked upload imported")
+        st, _ = call("POST", "/api/v1/uploads/sessions", {"filename": "x.ipa", "size": 10**15}, auth=f"Bearer {up_tok}")
+        check(st == 507, "insufficient disk space detected")
+
         print("\nAlle Tests bestanden.")
     finally:
         srv.terminate()

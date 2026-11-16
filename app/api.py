@@ -12,7 +12,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from . import auth, config, db, feed, github, store, sync
+from . import auth, config, db, feed, github, store, sync, uploads
 from .db import jloads
 
 
@@ -86,7 +86,7 @@ async def info(request):
         "version": config.VERSION,
         "api": config.API_VERSION,
         "setup_required": auth.user_count() == 0,
-        "features": ["github", "github_device_flow", "upload", "webdav", "webhook", "legacy_feed"],
+        "features": ["github", "github_device_flow", "upload", "chunked_upload", "webdav", "webhook", "legacy_feed"],
     })
 
 
@@ -519,7 +519,7 @@ async def _receive_to_tmp(stream_iter):
     with open(tmp, "wb") as f:
         async for chunk in stream_iter:
             size += len(chunk)
-            if size > config.MAX_UPLOAD_BYTES:
+            if config.MAX_UPLOAD_BYTES and size > config.MAX_UPLOAD_BYTES:
                 f.close()
                 tmp.unlink(missing_ok=True)
                 raise ApiError(413, "too_large", "Datei zu groß")
@@ -566,6 +566,73 @@ async def upload(request):
     a = db.one("SELECT * FROM apps WHERE id = ?", build["app_id"])
     return JSONResponse({"build": _build_json(db.one("SELECT * FROM builds WHERE id = ?", build["id"]), request),
                          "app": _app_json(a, request)}, status_code=201)
+
+
+# ======================================================= chunked uploads
+def _session_json(meta, request):
+    out = uploads.public(meta)
+    if meta.get("build_id"):
+        bld = db.one("SELECT * FROM builds WHERE id = ?", meta["build_id"])
+        app_row = db.one("SELECT * FROM apps WHERE id = ?", meta["app_id"]) if bld else None
+        if bld and app_row:
+            out["build"] = _build_json(bld, request)
+            out["app"] = _app_json(app_row, request)
+    return out
+
+
+def _own_session(request):
+    meta = uploads.get(request.path_params["sid"])
+    if not meta:
+        raise ApiError(404, "not_found", "Upload-Sitzung nicht gefunden oder abgelaufen")
+    p = request.state.principal
+    if meta.get("user_id") not in (None, p.user["id"]):
+        raise ApiError(404, "not_found", "Upload-Sitzung nicht gefunden")
+    return meta
+
+
+@endpoint("upload")
+async def upload_session_create(request):
+    data = await body(request)
+    try:
+        size = int(data.get("size") or 0)
+    except (TypeError, ValueError):
+        raise ApiError(400, "invalid", "size muss eine Zahl sein")
+    try:
+        meta = await run_in_threadpool(uploads.create, str(data.get("filename") or ""), size,
+                                       str(data.get("notes") or ""), data.get("visible", True) not in (False, 0, "0"),
+                                       request.state.principal.user["id"])
+    except ValueError as e:
+        code = 413 if "groß" in str(e) else 507 if "Speicherplatz" in str(e) else 400
+        raise ApiError(code, "too_large" if code != 400 else "invalid", str(e))
+    return JSONResponse(_session_json(meta, request), status_code=201)
+
+
+@endpoint("upload")
+async def upload_session(request):
+    meta = _own_session(request)
+    if request.method == "GET":
+        return JSONResponse(_session_json(meta, request))
+    if request.method == "DELETE":
+        await run_in_threadpool(uploads.abort, meta["id"])
+        return JSONResponse({"ok": True})
+    # PUT chunk
+    try:
+        offset = int(request.query_params.get("offset", "-1"))
+    except ValueError:
+        offset = -1
+    try:
+        meta = await uploads.append(meta["id"], offset, request.stream())
+    except uploads.OffsetMismatch as e:
+        return JSONResponse({"error": {"code": "offset_mismatch", "message": "Falscher Offset",
+                                       "received": e.received}, "received": e.received}, status_code=409)
+    return JSONResponse({"received": meta["received"], "size": meta["size"]})
+
+
+@endpoint("upload")
+async def upload_session_complete(request):
+    meta = _own_session(request)
+    meta = await run_in_threadpool(uploads.complete, meta["id"])
+    return JSONResponse(_session_json(meta, request), status_code=202)
 
 
 # ==================================================================== webhook
@@ -630,5 +697,8 @@ def routes():
         Route(p + "/github/repos", gh_repos, methods=["GET"]),
         Route(p + "/github/repos/{owner}/{repo}/scan", gh_scan, methods=["GET"]),
         Route(p + "/uploads", upload, methods=["POST", "PUT"]),
+        Route(p + "/uploads/sessions", upload_session_create, methods=["POST"]),
+        Route(p + "/uploads/sessions/{sid}", upload_session, methods=["GET", "PUT", "DELETE"]),
+        Route(p + "/uploads/sessions/{sid}/complete", upload_session_complete, methods=["POST"]),
         Route(p + "/webhooks/github", webhook, methods=["POST"]),
     ]
