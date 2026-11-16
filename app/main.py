@@ -83,8 +83,22 @@ async def default_icon(request: Request):
                     headers={"Cache-Control": "public, max-age=3600"})
 
 
+def _asset_version() -> str:
+    """Changes whenever a static file changes -> browsers fetch fresh JS/CSS after an update."""
+    import hashlib
+    h = hashlib.sha256(config.VERSION.encode())
+    for f in sorted(STATIC.glob("*")):
+        h.update(f.name.encode()); h.update(str(f.stat().st_mtime_ns).encode()); h.update(str(f.stat().st_size).encode())
+    return h.hexdigest()[:10]
+
+
 async def index(request: Request):
-    return FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
+    v = _asset_version()
+    html = (STATIC / "index.html").read_text()
+    html = (html.replace("/static/app.js", f"/static/app.js?v={v}")
+                .replace("/static/style.css", f"/static/style.css?v={v}")
+                .replace("__VERSION__", config.VERSION))
+    return Response(html, media_type="text/html", headers={"Cache-Control": "no-store"})
 
 
 async def health(request: Request):
