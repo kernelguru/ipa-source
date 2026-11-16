@@ -145,6 +145,28 @@ SCHEMA = [
     );
     CREATE INDEX IF NOT EXISTS signed_build ON signed(build_id, cert_id);
     """,
+    # v4: other git hosts + link downloader
+    """
+    ALTER TABLE sources ADD COLUMN host TEXT NOT NULL DEFAULT '';
+    ALTER TABLE sources ADD COLUMN token_enc TEXT NOT NULL DEFAULT '';
+    ALTER TABLE sources ADD COLUMN label TEXT NOT NULL DEFAULT '';
+    CREATE TABLE IF NOT EXISTS downloads (
+        id INTEGER PRIMARY KEY,
+        url TEXT NOT NULL,
+        current_url TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'wartet',    -- wartet | läuft | auswahl | fertig | fehler | abgebrochen
+        received INTEGER NOT NULL DEFAULT 0,
+        total INTEGER NOT NULL DEFAULT 0,
+        error TEXT NOT NULL DEFAULT '',
+        candidates TEXT NOT NULL DEFAULT '[]',
+        repo_hint TEXT NOT NULL DEFAULT '',
+        build_id INTEGER REFERENCES builds(id) ON DELETE SET NULL,
+        notes TEXT NOT NULL DEFAULT '',
+        via TEXT NOT NULL DEFAULT 'web',
+        created_at TEXT NOT NULL,
+        finished_at TEXT
+    );
+    """,
 ]
 
 

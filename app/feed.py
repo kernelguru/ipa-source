@@ -5,7 +5,7 @@ from . import config, db
 from .db import jloads
 
 CATEGORIES = {"developer", "entertainment", "games", "lifestyle", "other", "photo-video", "social", "utilities"}
-ORIGIN_RANK = {"release": 3, "upload": 2, "webdav": 2, "artifact": 1}
+ORIGIN_RANK = {"release": 3, "upload": 2, "webdav": 2, "download": 2, "artifact": 1}
 IGNORED_ENT = {"application-identifier", "com.apple.developer.team-identifier",
                "keychain-access-groups", "get-task-allow"}
 

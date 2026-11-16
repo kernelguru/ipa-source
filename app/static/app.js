@@ -59,7 +59,7 @@ document.addEventListener("click", (e) => {
 // --------------------------------------------------------------- router --
 const routes = {
   apps: renderApps, app: renderApp, sources: renderSources, github: renderGithubRepos,
-  upload: renderUpload, feed: renderFeed, settings: renderSettings, log: renderLog, icon: renderIconDesigner, signing: renderSigning,
+  upload: renderUpload, feed: renderFeed, settings: renderSettings, log: renderLog, icon: renderIconDesigner, signing: renderSigning, downloads: renderDownloads,
 };
 let timer = null;
 async function route() {
@@ -225,21 +225,51 @@ async function renderApp(id) {
 function sourceForm(s = {}) {
   const v = (k, d) => esc(s[k] ?? d);
   const c = (k, d) => (s[k] ?? d) ? "checked" : "";
-  return `<h2>${s.id ? "Quelle bearbeiten" : "GitHub-Quelle hinzufügen"}</h2><div class="form">
-    <div class="full"><label>Repository (owner/name)</label><input name="repo" value="${v("repo", "")}" required ${s.id ? "readonly" : ""}></div>
+  const kind = s.kind || "github";
+  return `<h2>${s.id ? "Quelle bearbeiten" : "Quelle hinzufügen"}</h2><div class="form">
+    ${s.id ? `<div class="full"><label>${esc(s.provider || "GitHub")}</label><input value="${esc(s.web_url || s.repo)}" readonly></div>`
+      : `<div><label>Anbieter</label><select name="kind" data-kind><option value="github" ${kind === "github" ? "selected" : ""}>GitHub</option><option value="gitea" ${kind === "gitea" ? "selected" : ""}>Gitea / Forgejo / Codeberg</option></select></div>
+    <div data-gitea ${kind === "gitea" ? "" : "hidden"}><label>Server</label><input name="host" value="${v("host", "https://codeberg.org")}"></div>
+    <div class="full"><label>Repository – owner/name oder einfach die URL einfügen</label><input name="repo" value="${v("repo", "")}" required placeholder="z. B. claration/Feather oder https://codeberg.org/owner/app"></div>`}
+    <div class="full"><label>Anzeigename (optional)</label><input name="label" value="${v("label", "")}"></div>
     <label class="check"><input type="checkbox" name="use_releases" ${c("use_releases", true)}> Releases</label>
-    <label class="check"><input type="checkbox" name="use_artifacts" ${c("use_artifacts", false)}> Actions-Artefakte</label>
+    <label class="check" data-gh ${kind === "gitea" ? "hidden" : ""}><input type="checkbox" name="use_artifacts" ${c("use_artifacts", false)}> Actions-Artefakte</label>
     <label class="check"><input type="checkbox" name="include_prereleases" ${c("include_prereleases", false)}> Pre-Releases</label>
     <label class="check"><input type="checkbox" name="enabled" ${c("enabled", true)}> Aktiv</label>
     <div><label>Dateimuster (Release / im Artefakt)</label><input name="asset_pattern" value="${v("asset_pattern", "*.ipa")}"></div>
-    <div><label>Artefakt-Name (Glob)</label><input name="artifact_name" value="${v("artifact_name", "*")}"></div>
-    <div><label>Nur Branch (leer = alle)</label><input name="artifact_branch" value="${v("artifact_branch", "")}"></div>
-    <div><label>Releases behalten</label><input name="keep_releases" type="number" min="0" value="${v("keep_releases", 5)}"></div>
-    <div><label>Artefakte behalten</label><input name="keep_artifacts" type="number" min="0" value="${v("keep_artifacts", 3)}"></div>
+    <div data-gh ${kind === "gitea" ? "hidden" : ""}><label>Artefakt-Name (Glob)</label><input name="artifact_name" value="${v("artifact_name", "*")}"></div>
+    <div data-gh ${kind === "gitea" ? "hidden" : ""}><label>Nur Branch (leer = alle)</label><input name="artifact_branch" value="${v("artifact_branch", "")}"></div>
+    <div><label>Releases behalten</label><input name="keep_releases" type="number" min="0" value="${v("keep_releases", s.id ? 5 : 3)}"></div>
+    <div data-gh ${kind === "gitea" ? "hidden" : ""}><label>Artefakte behalten</label><input name="keep_artifacts" type="number" min="0" value="${v("keep_artifacts", 3)}"></div>
+    <div class="full" data-gitea ${kind === "gitea" ? "" : "hidden"}><label>Zugangstoken (nur für private Repos)</label><input name="token" type="password" placeholder="${s.has_token ? "gespeichert – leer lassen zum Behalten" : "optional"}" autocomplete="off"></div>
   </div><div class="row" style="margin-top:16px"><button class="primary">Speichern</button><button value="cancel">Abbrechen</button></div>`;
 }
+function bindSourceForm(form) {
+  const sel = form.querySelector("[data-kind]");
+  const repo = form.querySelector("[name=repo]");
+  const sync = () => {
+    const g = sel.value === "gitea";
+    form.querySelectorAll("[data-gitea]").forEach((e) => (e.hidden = !g));
+    form.querySelectorAll("[data-gh]").forEach((e) => (e.hidden = g));
+  };
+  if (sel) {
+    sel.onchange = sync;
+    repo.addEventListener("input", () => {   // pasted URL decides the provider
+      const m = repo.value.trim().match(/^(https?:\/\/)?([^/\s]+)\/[^/\s]+\/[^/\s]+/);
+      if (!m || !m[2].includes(".")) return;
+      const gh = /^(www\.)?github\.com$/i.test(m[2]);
+      sel.value = gh ? "github" : "gitea";
+      if (!gh) form.querySelector("[name=host]").value = (m[1] || "https://") + m[2];
+      sync();
+    });
+  }
+  return form;
+}
 const sourcePayload = (f) => ({
-  repo: f.get("repo"), use_releases: f.get("use_releases") === "on", use_artifacts: f.get("use_artifacts") === "on",
+  ...(f.get("repo") !== null ? { repo: f.get("repo"), kind: f.get("kind"), host: f.get("host") } : {}),
+  ...(f.get("token") ? { token: f.get("token") } : {}),
+  label: f.get("label") || "",
+  use_releases: f.get("use_releases") === "on", use_artifacts: f.get("use_artifacts") === "on",
   include_prereleases: f.get("include_prereleases") === "on", enabled: f.get("enabled") === "on",
   asset_pattern: f.get("asset_pattern"), artifact_name: f.get("artifact_name"), artifact_branch: f.get("artifact_branch"),
   keep_releases: +f.get("keep_releases"), keep_artifacts: +f.get("keep_artifacts"),
@@ -247,18 +277,19 @@ const sourcePayload = (f) => ({
 
 async function renderSources() {
   const [{ sources }, gh] = await Promise.all([api("GET", "/sources"), api("GET", "/github")]);
-  view.innerHTML = `<div class="head"><div><h1>GitHub-Quellen</h1>
+  view.innerHTML = `<div class="head"><div><h1>Quellen</h1>
       <div class="muted">${gh.connected ? `Verbunden als <b>${esc(gh.user || "?")}</b>` : `Nicht mit GitHub verbunden – <a href="#/settings">verbinden</a>`}</div></div>
-    <div class="row"><a class="btn" href="#/github">Aus meinen Repos wählen</a><button class="primary" id="add">Manuell hinzufügen</button></div></div>
+    <div class="row"><a class="btn" href="#/github">Aus meinen GitHub-Repos wählen</a><button class="primary" id="add">Quelle hinzufügen</button></div></div>
+    <div class="muted small" style="margin:-10px 0 16px">Auch fremde öffentliche Repos auf GitHub, Codeberg, Gitea oder Forgejo – neue Releases werden automatisch geladen. Ohne GitHub-Token erlaubt GitHub nur 60 Abfragen pro Stunde.</div>
     <div class="panel">${sources.length ? `<table><thead><tr><th>Repository</th><th>Holt</th><th>Builds</th><th>Letzter Sync</th><th></th></tr></thead><tbody>
       ${sources.map((s) => `<tr data-id="${s.id}">
-        <td><b>${esc(s.repo)}</b> ${s.enabled ? "" : '<span class="badge">inaktiv</span>'}${s.syncing ? ' <span class="badge">läuft …</span>' : ""}</td>
+        <td><a href="${esc(s.web_url)}" target="_blank" rel="noopener"><b>${esc(s.label || s.repo)}</b></a> <span class="badge">${esc(s.provider)}</span> ${s.enabled ? "" : '<span class="badge">inaktiv</span>'}${s.syncing ? ' <span class="badge">läuft …</span>' : ""}${s.label ? `<div class="muted small">${esc(s.repo)}</div>` : ""}${s.kind === "gitea" && !s.host.includes("codeberg.org") ? `<div class="muted small">${esc(s.host)}</div>` : ""}</td>
         <td class="small">${[s.use_releases && "Releases", s.use_artifacts && `Artefakte${s.artifact_branch ? ` (${esc(s.artifact_branch)})` : ""}`].filter(Boolean).join(", ")}</td>
         <td>${s.build_count}</td>
         <td class="small">${fmtDate(s.last_sync_at)}<div class="muted">${esc(s.last_status)}</div>${s.last_error ? `<div class="badge err" title="${esc(s.last_error)}">Fehler</div>` : ""}</td>
         <td class="row" style="justify-content:flex-end"><button class="sm" data-sync>Sync</button><button class="sm" data-edit>Bearbeiten</button><button class="sm danger" data-del>Entfernen</button></td></tr>`).join("")}
       </tbody></table>` : `<div class="muted">Noch keine Quellen.</div>`}</div>`;
-  $("#add").onclick = () => modal(sourceForm(), async (f) => { await api("POST", "/sources", sourcePayload(f)); toast("Quelle angelegt, Sync läuft"); renderSources(); });
+  $("#add").onclick = () => bindSourceForm(modal(sourceForm(), async (f) => { await api("POST", "/sources", sourcePayload(f)); toast("Quelle angelegt, Sync läuft"); renderSources(); }));
   $$("tr[data-id]").forEach((tr) => {
     const s = sources.find((x) => String(x.id) === tr.dataset.id);
     $("[data-sync]", tr).onclick = guard(async () => { await api("POST", `/sources/${s.id}/sync`); toast("Sync gestartet"); setTimeout(renderSources, 1500); });
@@ -450,6 +481,74 @@ async function renderSigning() {
     }));
     $("[data-sdel]", tr).onclick = guard(async () => { await api("DELETE", `/signed/${x.id}`); renderSigning(); });
   });
+}
+
+// -------------------------------------------------------------- downloads --
+const dlStatus = { wartet: "wartet", läuft: "lädt", auswahl: "Auswahl nötig", fertig: "fertig", fehler: "Fehler", abgebrochen: "abgebrochen" };
+
+async function renderDownloads() {
+  const [{ downloads }, s] = await Promise.all([api("GET", "/downloads"), api("GET", "/settings")]);
+  const endpoint = `${s.base_url_effective}/api/v1/downloads`;
+  view.innerHTML = `<div class="head"><div><h1>Downloads</h1><div class="muted">IPA-Links laden – direkt, von Webseiten, Release-Seiten oder itms-services-Links.</div></div></div>
+    <form class="panel row" id="dlform"><input name="url" placeholder="https://… (IPA-Link, Webseite oder Repo-URL)" style="flex:1;min-width:260px" required>
+      <input name="notes" placeholder="Notiz (optional)" style="width:200px"><button class="primary">Laden</button></form>
+    <div class="panel">${downloads.length ? `<table><tbody>${downloads.map((d) => `<tr data-id="${d.id}">
+      <td style="max-width:420px"><div class="mono small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(d.url)}">${esc(d.url)}</div>
+        <div class="small muted">${fmtDate(d.created_at)}${d.via === "shortcut" ? " · per Kurzbefehl" : ""}${d.notes ? " · " + esc(d.notes) : ""}</div>
+        ${d.status === "läuft" ? `<progress max="${d.total || 1}" value="${d.received}"></progress><div class="small muted">${d.received ? fmtSize(d.received) + (d.total ? " von " + fmtSize(d.total) : "") : "verbinde …"}</div>` : ""}
+        ${d.status === "fehler" ? `<div class="small"><span class="badge err">Fehler</span> ${esc(d.error)}</div>` : ""}
+        ${d.status === "auswahl" ? `<div class="small" style="margin-top:6px">Mehrere IPAs gefunden – bitte wählen:</div>${d.candidates.map((c, i) => `<div><button class="sm" data-pick="${i}">${esc(c.label)}${c.size ? " · " + fmtSize(c.size) : ""}</button></div>`).join("")}` : ""}
+        ${d.status === "fertig" && d.app ? `<div class="small">✓ <a href="#/app/${d.app.id}">${esc(d.app.name)}</a> ${esc(d.build?.version || "")} (${esc(d.build?.build_version || "")})</div>` : ""}
+        ${d.repo_hint && !d.repo_watched ? `<div style="margin-top:6px"><button class="sm" data-watch>Repo ${esc(d.repo_hint.repo)} überwachen</button></div>` : ""}</td>
+      <td><span class="badge ${d.status === "fertig" ? "release" : d.status === "fehler" ? "err" : ""}">${dlStatus[d.status] || esc(d.status)}</span></td>
+      <td class="row" style="justify-content:flex-end">${["fehler", "abgebrochen"].includes(d.status) ? '<button class="sm" data-retry>Erneut</button>' : ""}
+        <button class="sm danger" data-del>${["wartet", "läuft"].includes(d.status) ? "Abbrechen" : "Entfernen"}</button></td></tr>`).join("")}</tbody></table>`
+      : '<div class="muted">Noch keine Downloads.</div>'}</div>
+
+    <div class="panel stack"><h2>iOS-Kurzbefehl „An ipa-source senden“</h2>
+      <div class="muted small">Damit schickst du Links direkt aus Safari (oder jeder App mit Teilen-Menü) an deinen Server. Signierte Kurzbefehl-Dateien kann nur Apple erzeugen – deshalb baust du ihn einmal selbst (2 Minuten), danach kannst du ihn per iCloud-Link teilen.</div>
+      <div><label>1. Token für den Kurzbefehl (darf nur hochladen/laden)</label>
+        <div id="sctoken"><button class="sm primary" id="mktoken">Token erstellen</button></div></div>
+      <div><label>2. Adresse</label>${copyBox(endpoint)}</div>
+      <ol class="small" style="line-height:1.7;margin:0;padding-left:20px">
+        <li>App <b>Kurzbefehle</b> → <b>+</b> → oben auf den Namen tippen → „An ipa-source senden“.</li>
+        <li>Unten auf <b>(i)</b>: <b>Im Share-Sheet anzeigen</b> einschalten. Bei „Share-Sheet-Typen“ nur <b>URLs</b> und <b>Safari-Webseiten</b> lassen.
+          „Wenn keine Eingabe“: <b>Zwischenablage abrufen</b> (dann funktioniert er auch per Siri/Home-Bildschirm mit kopiertem Link).</li>
+        <li>Aktion <b>Inhalte von URL abrufen</b> hinzufügen. URL = die Adresse oben. Auf „Mehr anzeigen“:
+          Methode <b>POST</b> · Header: <code>Authorization</code> = <code>Bearer &lt;Token&gt;</code> ·
+          Anfragetext <b>JSON</b> → Feld hinzufügen: Typ <b>Text</b>, Schlüssel <code>url</code>, Wert: Variable <b>Kurzbefehleingabe</b>.</li>
+        <li>Aktion <b>Wörterbuchwert abrufen</b>: Schlüssel <code>message</code> aus <b>Inhalte von URL</b>.</li>
+        <li>Aktion <b>Mitteilung anzeigen</b> mit dem <b>Wörterbuchwert</b>.</li>
+      </ol>
+      <div class="muted small">Hinter Pangolin: den Pfad <code>/api/v1/downloads</code> ohne Login freigeben – er ist durch das Token geschützt.</div>
+    </div>`;
+
+  $("#dlform").onsubmit = guard(async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    await api("POST", "/downloads", { url: f.get("url"), notes: f.get("notes") });
+    e.target.reset(); renderDownloads();
+  });
+  $("#mktoken").onclick = guard(async () => {
+    const r = await api("POST", "/tokens", { name: "iOS Kurzbefehl", scope: "upload" });
+    $("#sctoken").innerHTML = `${copyBox("Bearer " + r.token)}<div class="muted small">Nur jetzt sichtbar – komplett (inkl. „Bearer “) als Header-Wert eintragen.</div>`;
+  });
+  $$("tr[data-id]").forEach((tr) => {
+    const d = downloads.find((x) => String(x.id) === tr.dataset.id);
+    $$("[data-pick]", tr).forEach((b) => b.onclick = guard(async () => { await api("POST", `/downloads/${d.id}/choose`, { url: d.candidates[+b.dataset.pick].url }); renderDownloads(); }));
+    $("[data-retry]", tr)?.addEventListener("click", guard(async () => { await api("POST", `/downloads/${d.id}/retry`); renderDownloads(); }));
+    $("[data-del]", tr).onclick = guard(async () => { await api("DELETE", `/downloads/${d.id}`); renderDownloads(); });
+    $("[data-watch]", tr)?.addEventListener("click", () => bindSourceForm(modal(sourceForm({ kind: d.repo_hint.kind, host: d.repo_hint.host, repo: d.repo_hint.repo, keep_releases: 2 }),
+      async (f) => { await api("POST", "/sources", sourcePayload(f)); toast("Repo wird überwacht"); renderDownloads(); })));
+  });
+  if (downloads.some((d) => ["wartet", "läuft"].includes(d.status))) {
+    clearInterval(timer);
+    timer = setInterval(() => {
+      if (!location.hash.startsWith("#/downloads")) return clearInterval(timer);
+      const busy = $("#sctoken input") || document.activeElement?.closest("#dlform") || $("#modal").open;
+      if (!busy) renderDownloads();
+    }, 2000);
+  }
 }
 
 // --------------------------------------------------------- icon designer --

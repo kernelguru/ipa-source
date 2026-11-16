@@ -4,6 +4,9 @@ Selbst gehostete App-Source für **Feather, KravaSign, ESign, AltStore und SideS
 unsignierte IPAs aus GitHub-Releases, Actions-Artefakten, Web-Upload oder WebDAV,
 verwaltet über ein Web-Admin mit REST-API.
 
+- **Quellen überwachen:** eigene und fremde öffentliche Repos auf **GitHub, Codeberg, Gitea und Forgejo**.
+  Neue Releases werden automatisch geladen. Die URL einfügen genügt, der Anbieter wird erkannt.
+- **Link-Downloader** inkl. **iOS-Kurzbefehl**: Links aus Safari teilen, und der Server lädt die IPA.
 - **GitHub-Quellen:** Releases und/oder Actions-Artefakte. Über einen Token oder GitHub-Login (Device Flow) verbunden,
   Repos werden aufgelistet und auf IPAs gescannt.
 - **Upload** per Drag & Drop im Browser (in Teilen, fortsetzbar, auch für IPAs mit mehreren GB) oder per `curl` aus CI
@@ -61,6 +64,32 @@ auf „Mit GitHub anmelden“ klicken und den angezeigten Code auf github.com be
 Ein Callback auf den Server ist nicht nötig, das funktioniert also auch rein im LAN.
 
 Danach unter *GitHub-Quellen → Aus meinen Repos wählen* die Repos scannen und hinzufügen.
+
+## Fremde Quellen (GitHub, Codeberg, Gitea, Forgejo)
+
+Unter **Quellen → Quelle hinzufügen** die Repo-URL einfügen, z. B. `https://github.com/claration/Feather` oder
+`https://codeberg.org/owner/app`. GitHub oder Gitea/Forgejo wird automatisch erkannt. Für selbst gehostete
+Gitea/Forgejo-Server zählt die Adresse aus der URL. Für private Gitea-Repos kann pro Quelle ein Token hinterlegt
+werden (verschlüsselt gespeichert). Actions-Artefakte gibt es nur bei GitHub.
+
+Abfragen an GitHub nutzen ETags. Unveränderte Antworten zählen dadurch nicht gegen das Limit. Ohne GitHub-Token
+erlaubt GitHub trotzdem nur 60 Abfragen pro Stunde, bei vielen Quellen also einen Token hinterlegen (auch für fremde
+öffentliche Repos genügt einer ohne besondere Rechte).
+
+## Link-Downloader und iOS-Kurzbefehl
+
+Unter **Downloads** eine URL eingeben, oder per API bzw. Kurzbefehl `POST /api/v1/downloads` mit `{"url": "…"}`. Erkannt werden:
+
+- direkte `.ipa`-Links. Bricht die Verbindung ab, wird per HTTP-Range fortgesetzt.
+- `itms-services://`-Installationslinks (die IPA wird aus dem Manifest geholt)
+- Repo-, Release- und Tag-Seiten von GitHub, Codeberg, Gitea und Forgejo (neueste IPA, danach „Repo überwachen“ möglich)
+- Dropbox-Freigabelinks
+- beliebige Webseiten, die auf IPAs verlinken: Ein Link wird direkt geladen, bei mehreren fragt die Oberfläche nach.
+
+**Kurzbefehl:** Die Anleitung steht in der Oberfläche unter *Downloads* (mit deiner Adresse und einem Button für ein
+Token mit Scope `upload`). Apple lässt nur signierte Kurzbefehl-Dateien zu, deshalb baust du ihn einmal in der
+Kurzbefehle-App (3 Aktionen) und kannst ihn danach per iCloud-Link teilen.
+Hinter Pangolin den Pfad `/api/v1/downloads` freigeben, er ist durch das Token geschützt.
 
 ## Versionierung
 

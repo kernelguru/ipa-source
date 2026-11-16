@@ -31,17 +31,34 @@ def _headers(accept="application/vnd.github+json", tok=None):
     return h
 
 
+_etags: dict = {}   # url -> (etag, data, headers); conditional GETs keep us under the rate limit
+
+
 def request(path_or_url, method="GET", body=None, tok=None, accept="application/vnd.github+json"):
     url = path_or_url if path_or_url.startswith("http") else API + path_or_url
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers=_headers(accept, tok))
     if data:
         req.add_header("Content-Type", "application/json")
+    cache_key = (url, tok if tok is not None else token())
+    cached = _etags.get(cache_key) if method == "GET" else None
+    if cached:
+        req.add_header("If-None-Match", cached[0])
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             raw = r.read()
-            return json.loads(raw) if raw else None, r.headers
+            parsed = json.loads(raw) if raw else None
+            if method == "GET" and r.headers.get("ETag"):
+                if len(_etags) > 500:
+                    _etags.clear()
+                _etags[cache_key] = (r.headers["ETag"], parsed, r.headers)
+            return parsed, r.headers
     except urllib.error.HTTPError as e:
+        if e.code == 304 and cached:
+            return cached[1], cached[2]
+        if e.code == 403 and e.headers.get("X-RateLimit-Remaining") == "0":
+            raise GitHubError(403, "API-Limit erreicht – GitHub-Token in den Einstellungen hinterlegen "
+                                   "(ohne Token nur 60 Anfragen pro Stunde)") from None
         try:
             msg = json.loads(e.read()).get("message", e.reason)
         except Exception:

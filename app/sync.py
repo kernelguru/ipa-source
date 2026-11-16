@@ -8,7 +8,7 @@ import uuid
 import zipfile
 from pathlib import Path
 
-from . import config, db, github, store, uploads
+from . import config, db, github, providers, store, uploads
 
 _queue: "queue.Queue[tuple]" = queue.Queue()
 _state = {"running": None, "queued": 0, "last_full_sync": None}
@@ -24,7 +24,36 @@ def enqueue(kind: str, arg=None):
 
 
 # ---------------------------------------------------------------- remote --
+def _source_token(src) -> str:
+    if not src.get("token_enc"):
+        return ""
+    from . import certs
+    return certs.decrypt(src["token_enc"])
+
+
+def _gitea_candidates(src):
+    out, tok = [], _source_token(src)
+    for rel in providers.gitea_releases(src["host"], src["repo"], tok):
+        if rel.get("draft") or (rel.get("prerelease") and not src["include_prereleases"]):
+            continue
+        asset = next((a for a in rel.get("assets", []) if fnmatch.fnmatch(a["name"], src["asset_pattern"])), None)
+        if asset:
+            out.append({
+                "origin": "release",
+                "ref": rel["tag_name"],
+                "date": rel.get("published_at") or rel.get("created_at"),
+                "notes": (rel.get("body") or rel.get("name") or "").strip(),
+                "filename": asset["name"],
+                "label": f"Release {rel['tag_name']}",
+                "fetch": lambda dest, a=asset: providers.download(a["browser_download_url"], dest, tok, src["host"]),
+            })
+    out.sort(key=lambda c: c["date"] or "", reverse=True)
+    return out
+
+
 def _remote_candidates(src):
+    if src.get("kind") == "gitea":
+        return _gitea_candidates(src)
     out = []
     if src["use_releases"]:
         for rel in github.releases(src["repo"]):
@@ -90,6 +119,7 @@ def sync_source(source_id: int):
     if not src or not src["enabled"]:
         return
     _state["running"] = src["repo"]
+    src = dict(src)
     imported, errors = 0, []
     try:
         candidates = _remote_candidates(src)
@@ -211,5 +241,7 @@ def start():
         if d.is_file():
             d.unlink(missing_ok=True)
     uploads.resume_pending()
+    from . import downloader
+    downloader.resume_pending()
     threading.Thread(target=_worker, daemon=True, name="worker").start()
     threading.Thread(target=_scheduler, daemon=True, name="scheduler").start()

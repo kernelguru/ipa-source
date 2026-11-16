@@ -5,6 +5,7 @@ import hmac
 import json
 import secrets
 import time
+import urllib.parse
 import urllib.request
 import uuid
 
@@ -13,7 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from . import auth, certs, config, db, feed, github, signing, store, sync, uploads
+from . import auth, certs, config, db, downloader, feed, github, providers, signing, store, sync, uploads
 from . import ipa as ipa_mod
 from .db import jloads
 
@@ -55,6 +56,8 @@ def endpoint(need="full"):
                 return err(502, "github", str(e))
             except ValueError as e:
                 return err(400, "invalid", str(e))
+            except providers.ProviderError as e:
+                return err(502, "provider", str(e))
         return wrapper
     return deco
 
@@ -88,7 +91,7 @@ async def info(request):
         "version": config.VERSION,
         "api": config.API_VERSION,
         "setup_required": auth.user_count() == 0,
-        "features": ["github", "github_device_flow", "upload", "chunked_upload", "icon_designer", "icon_inject", "server_signing", "ota_install", "usb_install", "webdav", "webhook", "legacy_feed"],
+        "features": ["github", "github_device_flow", "upload", "chunked_upload", "icon_designer", "icon_inject", "server_signing", "ota_install", "usb_install", "link_downloader", "gitea_sources", "webdav", "webhook", "legacy_feed"],
     })
 
 
@@ -426,7 +429,7 @@ async def build_detail(request):
 
 
 # ==================================================================== sources
-SOURCE_FIELDS = {"repo": str, "use_releases": b, "use_artifacts": b, "include_prereleases": b,
+SOURCE_FIELDS = {"repo": str, "label": str, "use_releases": b, "use_artifacts": b, "include_prereleases": b,
                  "asset_pattern": str, "artifact_name": str, "artifact_branch": str,
                  "keep_releases": int, "keep_artifacts": int, "enabled": b}
 
@@ -434,6 +437,9 @@ SOURCE_FIELDS = {"repo": str, "use_releases": b, "use_artifacts": b, "include_pr
 def _source_json(s):
     n = db.one("SELECT COUNT(*) AS n FROM builds WHERE source_id = ?", s["id"])["n"]
     out = dict(s)
+    out["has_token"] = bool(out.pop("token_enc", ""))
+    out["web_url"] = (f"{s['host']}/{s['repo']}" if s["kind"] == "gitea" else f"https://github.com/{s['repo']}")
+    out["provider"] = ("Codeberg" if "codeberg.org" in s["host"] else "Gitea/Forgejo") if s["kind"] == "gitea" else "GitHub"
     for k in ("use_releases", "use_artifacts", "include_prereleases", "enabled"):
         out[k] = bool(out[k])
     out["build_count"] = n
@@ -447,11 +453,17 @@ def _clean_source(data, partial=False):
         if k in data:
             out[k] = conv(data[k]) if conv is not b else b(data[k])
     if "repo" in out:
-        out["repo"] = out["repo"].strip().removeprefix("https://github.com/").strip("/")
-        if out["repo"].count("/") != 1:
-            raise ApiError(400, "invalid", "repo muss 'owner/name' sein")
+        try:
+            kind, host, repo = providers.parse_repo(out["repo"], str(data.get("kind") or ""), str(data.get("host") or ""))
+        except ValueError as e:
+            raise ApiError(400, "invalid", str(e))
+        out.update(repo=repo, kind=kind, host=host)
+        if kind == "gitea":
+            out["use_artifacts"] = 0      # Gitea/Forgejo actions artifacts are not supported
     elif not partial:
         raise ApiError(400, "invalid", "repo fehlt")
+    if "token" in data:
+        out["token_enc"] = certs.encrypt(str(data["token"])) if data["token"] else ""
     for k in ("asset_pattern",):
         if k in out and not out[k]:
             out[k] = "*.ipa"
@@ -463,11 +475,17 @@ async def sources(request):
     if request.method == "GET":
         return JSONResponse({"sources": [_source_json(s) for s in db.all_("SELECT * FROM sources ORDER BY repo")]})
     data = _clean_source(await body(request))
-    if db.one("SELECT id FROM sources WHERE kind='github' AND lower(repo)=lower(?)", data["repo"]):
+    if db.one("SELECT id FROM sources WHERE kind = ? AND host = ? AND lower(repo) = lower(?)",
+              data["kind"], data["host"], data["repo"]):
         raise ApiError(409, "exists", "Quelle existiert bereits")
-    cols = ["kind", "created_at", *data.keys()]
-    sid = db.execute(f"INSERT INTO sources({', '.join(cols)}) VALUES({', '.join('?' * len(cols))})",
-                     "github", db.now(), *data.values())
+    cols = ["created_at", *data.keys()]
+    try:
+        sid = db.execute(f"INSERT INTO sources({', '.join(cols)}) VALUES({', '.join('?' * len(cols))})",
+                         db.now(), *data.values())
+    except Exception as e:
+        if "UNIQUE" in str(e):
+            raise ApiError(409, "exists", "Ein Repo mit diesem Namen existiert bereits als Quelle")
+        raise
     sync.enqueue("source", sid)
     return JSONResponse(_source_json(db.one("SELECT * FROM sources WHERE id = ?", sid)), status_code=201)
 
@@ -484,7 +502,9 @@ async def source_detail(request):
                 await run_in_threadpool(store.delete_build, x["id"])
         db.execute("DELETE FROM sources WHERE id = ?", sid)
         return JSONResponse({"ok": True})
-    data = _clean_source(await body(request), partial=True)
+    raw = await body(request)
+    raw.pop("repo", None)        # repo/provider are fixed after creation
+    data = _clean_source(raw, partial=True)
     if data:
         sets = ", ".join(f"{k} = ?" for k in data)
         db.execute(f"UPDATE sources SET {sets} WHERE id = ?", *data.values(), sid)
@@ -815,6 +835,85 @@ async def device_pair(request):
     return JSONResponse({"ok": ok, "message": msg}, status_code=200 if ok else 409)
 
 
+# ================================================================= downloads
+def _download_json(d, request):
+    out = dict(d)
+    if d.get("build_id"):
+        bld = db.one("SELECT * FROM builds WHERE id = ?", d["build_id"])
+        if bld:
+            out["app"] = _app_json(db.one("SELECT * FROM apps WHERE id = ?", bld["app_id"]), request)
+            out["build"] = {"id": bld["id"], "version": bld["version"], "build_version": bld["build_version"]}
+    if d.get("repo_hint"):
+        h = d["repo_hint"]
+        out["repo_watched"] = bool(db.one("SELECT id FROM sources WHERE kind = ? AND host = ? AND lower(repo) = lower(?)",
+                                          h["kind"], h["host"], h["repo"]))
+    return out
+
+
+@endpoint("upload")
+async def downloads(request):
+    """
+    POST {url, notes?} or ?url=… (iOS shortcut) -> 202 {id, message, …}
+    GET  -> recent downloads (scope read)
+    """
+    if request.method == "GET":
+        if not request.state.principal.can("read"):
+            raise ApiError(403, "forbidden", "Scope 'read' nötig")
+        return JSONResponse({"downloads": [_download_json(d, request) for d in downloader.recent()]})
+    url, notes = request.query_params.get("url", ""), request.query_params.get("notes", "")
+    raw = await request.body()
+    if raw:
+        ctype = request.headers.get("content-type", "")
+        if "json" in ctype:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                url = str(data.get("url") or url)
+                notes = str(data.get("notes") or notes)
+        elif "form" in ctype:
+            form = dict(urllib.parse.parse_qsl(raw.decode()))
+            url, notes = form.get("url", url), form.get("notes", notes)
+        else:
+            url = url or raw.decode("utf-8", "replace")
+    via = "shortcut" if "Shortcuts" in request.headers.get("user-agent", "") or request.query_params.get("via") == "shortcut" else \
+        ("web" if request.state.principal.via == "session" else "api")
+    d = await run_in_threadpool(downloader.enqueue, url, notes, via)
+    out = _download_json(d, request)
+    out["message"] = f"Download gestartet: {urllib.parse.urlparse(d['url']).netloc or d['url'][:40]}"
+    return JSONResponse(out, status_code=202)
+
+
+@endpoint("full")
+async def download_detail(request):
+    did = int(request.path_params["id"])
+    d = downloader.get(did)
+    if not d:
+        raise ApiError(404, "not_found", "Download nicht gefunden")
+    if request.method == "DELETE":
+        downloader.cancel(did)
+        if d["status"] not in ("wartet", "läuft"):
+            db.execute("DELETE FROM downloads WHERE id = ?", did)
+        return JSONResponse({"ok": True})
+    return JSONResponse(_download_json(d, request))
+
+
+@endpoint("full")
+async def download_choose(request):
+    data = await body(request)
+    d = await run_in_threadpool(downloader.choose, int(request.path_params["id"]), str(data.get("url") or ""))
+    return JSONResponse(_download_json(d, request), status_code=202)
+
+
+@endpoint("full")
+async def download_retry(request):
+    did = int(request.path_params["id"])
+    d = downloader.get(did)
+    if not d:
+        raise ApiError(404, "not_found", "Download nicht gefunden")
+    db.execute("DELETE FROM downloads WHERE id = ?", did)
+    n = await run_in_threadpool(downloader.enqueue, d["url"], d["notes"], d["via"])
+    return JSONResponse(_download_json(n, request), status_code=202)
+
+
 # ==================================================================== webhook
 @endpoint(None)
 async def webhook(request):
@@ -884,6 +983,10 @@ def routes():
         Route(p + "/uploads/sessions/{sid}", upload_session, methods=["GET", "PUT", "DELETE"]),
         Route(p + "/uploads/sessions/{sid}/complete", upload_session_complete, methods=["POST"]),
         Route(p + "/webhooks/github", webhook, methods=["POST"]),
+        Route(p + "/downloads", downloads, methods=["GET", "POST"]),
+        Route(p + "/downloads/{id:int}", download_detail, methods=["GET", "DELETE"]),
+        Route(p + "/downloads/{id:int}/choose", download_choose, methods=["POST"]),
+        Route(p + "/downloads/{id:int}/retry", download_retry, methods=["POST"]),
         Route(p + "/certs", certs_list, methods=["GET", "POST"]),
         Route(p + "/certs/{id:int}", cert_detail, methods=["PATCH", "DELETE"]),
         Route(p + "/builds/{id:int}/sign", build_sign, methods=["POST"]),

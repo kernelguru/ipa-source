@@ -32,7 +32,7 @@ components:
         id: {type: integer}
         app_id: {type: integer}
         source_id: {type: [integer, "null"]}
-        origin: {type: string, enum: [release, artifact, upload, webdav]}
+        origin: {type: string, enum: [release, artifact, upload, webdav, download]}
         origin_ref: {type: string, description: "Release tag, artifact id or upload id"}
         repo: {type: [string, "null"]}
         version: {type: string}
@@ -77,8 +77,14 @@ components:
       type: object
       properties:
         id: {type: integer}
-        kind: {type: string, enum: [github]}
-        repo: {type: string, example: kernelguru/my-app}
+        kind: {type: string, enum: [github, gitea]}
+        host: {type: string, description: "Gitea/Forgejo base URL, e.g. https://codeberg.org ('' for GitHub)"}
+        repo: {type: string, example: kernelguru/my-app, description: "owner/name or a full repository URL (provider detected)"}
+        label: {type: string}
+        token: {type: string, writeOnly: true, description: "Per-source token (Gitea/Forgejo private repos)"}
+        has_token: {type: boolean, readOnly: true}
+        web_url: {type: string, readOnly: true}
+        provider: {type: string, readOnly: true}
         use_releases: {type: boolean}
         use_artifacts: {type: boolean}
         include_prereleases: {type: boolean}
@@ -332,6 +338,29 @@ paths:
       summary: Pair with device (user taps Trust on the iPhone)
       parameters: [{name: udid, in: path, required: true, schema: {type: string}}]
       responses: {"200": {description: Paired}, "409": {description: Waiting for Trust / failed}}
+  /downloads:
+    get: {summary: Recent link downloads (scope read), responses: {"200": {description: OK}}}
+    post:
+      summary: Download an IPA from a URL (scope upload; for the iOS shortcut)
+      description: |
+        Accepts JSON {url, notes}, form data, a plain-text body, or ?url=.
+        Text around the URL is ignored ("Title https://…"). Response contains `message` for the shortcut notification.
+        Understands direct .ipa links, itms-services links, GitHub/Gitea/Forgejo/Codeberg repo and release pages,
+        Dropbox links and web pages linking to IPAs.
+      requestBody: {content: {application/json: {schema: {type: object, properties: {url: {type: string}, notes: {type: string}}}}}}
+      responses: {"202": {description: "{id, status, message, …}"}}
+  /downloads/{id}:
+    parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+    get: {summary: "Download state – status wartet | läuft | auswahl | fertig | fehler | abgebrochen; received/total; candidates; repo_hint", responses: {"200": {description: OK}}}
+    delete: {summary: Cancel or remove, responses: {"200": {description: OK}}}
+  /downloads/{id}/choose:
+    post:
+      summary: Pick one of the candidates (status auswahl)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      requestBody: {content: {application/json: {schema: {type: object, properties: {url: {type: string}}}}}}
+      responses: {"202": {description: Queued}}
+  /downloads/{id}/retry:
+    post: {summary: Retry a failed download, parameters: [{name: id, in: path, required: true, schema: {type: integer}}], responses: {"202": {description: Queued}}}
   /webhooks/github:
     post:
       summary: GitHub webhook (release, workflow_run) – HMAC signed, public
