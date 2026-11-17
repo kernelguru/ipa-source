@@ -174,7 +174,9 @@ def _zsign_error(raw: str, rc: int, out) -> str:
         hint = " – vermutlich zu wenig Arbeitsspeicher (OOM-Killer)" if -rc == 9 else ""
         return f"zsign wurde vom System beendet ({name}){hint}"
     if red:
-        return f"{red[0]} (Exit-Code {rc})"
+        uniq = list(dict.fromkeys(red))
+        detail = [x for x in uniq if x.lower().rstrip("!") not in ("failed", "signed failed")] or uniq
+        return f"{' · '.join(detail[:3])} (Exit-Code {rc})"
     if rc == 0:
         return "zsign meldet Erfolg, aber es entstand keine signierte Datei – Speicherplatz/Schreibrechte in /data prüfen"
     tail = [ANSI.sub("", ln).strip() for ln in raw.splitlines() if ln.strip()][-1:] or [""]
