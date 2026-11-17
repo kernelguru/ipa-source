@@ -368,7 +368,12 @@ async function signFlow(build, app) {
     for (;;) {
       const s = await api("GET", `/signed/${sid}`);
       if (s.status === "fertig") { stateEl.innerHTML = await signedActions(s); bindSignedActions(stateEl, s); $("#dosign", form).hidden = true; return; }
-      if (s.status === "fehler") { stateEl.innerHTML = `<div><span class="badge err">Fehler</span> ${esc(s.error)}</div>`; $("#dosign", form).disabled = false; return; }
+      if (s.status === "fehler") {
+        const d = await api("GET", `/signed/${sid}?log=1`);
+        stateEl.innerHTML = `<div><span class="badge err">Fehler</span> ${esc(s.error)}</div>
+          <details><summary class="small">Log anzeigen</summary><pre class="mono small" style="max-height:40vh;overflow:auto;white-space:pre-wrap">${esc(d.log || "(leer)")}</pre></details>`;
+        $("#dosign", form).disabled = false; return;
+      }
       stateEl.innerHTML = `<div class="muted">${s.status === "wartet" ? "wartet …" : "wird signiert … (große Apps brauchen etwa 1 Minute pro 10 GB)"}</div><progress></progress>`;
       if (!$("#modal").open) return;
       await sleep(1500);

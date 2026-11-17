@@ -86,8 +86,11 @@ def _worker():
         try:
             _sign(sid)
         except Exception as e:
-            db.execute("UPDATE signed SET status='fehler', error=?, finished_at=? WHERE id=?", str(e)[:500], db.now(), sid)
-            db.log_event("error", f"Signieren #{sid}: {e}")
+            import traceback
+            msg = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+            db.execute("UPDATE signed SET status='fehler', error=?, log=?, finished_at=? WHERE id=?",
+                       msg[:500], traceback.format_exc()[-8000:], db.now(), sid)
+            db.log_event("error", f"Signieren #{sid}: {msg}")
         finally:
             _q.task_done()
 
@@ -131,16 +134,16 @@ def _sign(sid: int):
     cmd.append(str(src))
     t0 = time.time()
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=4 * 3600)
-        log = ANSI.sub("", (r.stdout or "") + (r.stderr or ""))
+        r = subprocess.run(cmd, capture_output=True, timeout=4 * 3600)
+        raw = (r.stdout or b"").decode("utf-8", "replace") + (r.stderr or b"").decode("utf-8", "replace")
+        log = ANSI.sub("", raw)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     ok = r.returncode == 0 and out.exists() and out.stat().st_size > 0
     if not ok:
         out.unlink(missing_ok=True)
-        errs = [ln.strip(">> ").strip() for ln in log.splitlines() if "fail" in ln.lower() or "error" in ln.lower()
-                or "unknown" in ln.lower() or "invalid" in ln.lower()]
-        msg = errs[0] if errs else f"zsign beendet mit Code {r.returncode}"
+        msg = _zsign_error(raw, r.returncode, out)
+        log = f"$ zsign … (Exit-Code {r.returncode})\n" + log
         db.execute("UPDATE signed SET status='fehler', error=?, log=?, finished_at=? WHERE id=?",
                    msg[:500], log[-8000:], db.now(), sid)
         db.log_event("error", f"Signieren {a['name']} {b['version']}: {msg}")
@@ -156,6 +159,26 @@ def _sign(sid: int):
         if old["path"]:
             (config.SIGNED_DIR / old["path"]).unlink(missing_ok=True)
         db.execute("DELETE FROM signed WHERE id = ?", old["id"])
+
+
+def _zsign_error(raw: str, rc: int, out) -> str:
+    """Readable reason from zsign's output: red lines are errors, yellow ones only warnings."""
+    red = [ANSI.sub("", ln).strip().lstrip(">").strip() for ln in raw.splitlines() if "\x1b[31m" in ln]
+    red = [x for x in red if x]
+    if rc < 0:
+        import signal
+        try:
+            name = signal.Signals(-rc).name
+        except ValueError:
+            name = f"Signal {-rc}"
+        hint = " – vermutlich zu wenig Arbeitsspeicher (OOM-Killer)" if -rc == 9 else ""
+        return f"zsign wurde vom System beendet ({name}){hint}"
+    if red:
+        return f"{red[0]} (Exit-Code {rc})"
+    if rc == 0:
+        return "zsign meldet Erfolg, aber es entstand keine signierte Datei – Speicherplatz/Schreibrechte in /data prüfen"
+    tail = [ANSI.sub("", ln).strip() for ln in raw.splitlines() if ln.strip()][-1:] or [""]
+    return f"zsign beendet mit Exit-Code {rc}: {tail[0]}".rstrip(": ")
 
 
 def delete_signed(sid: int):

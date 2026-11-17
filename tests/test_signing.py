@@ -161,6 +161,17 @@ def main():
         st, again = call("POST", f"/api/v1/builds/{build_id}/sign", {})
         check(again["id"] == s["id"], "unchanged build reuses signed copy")
 
+        make(tmp / "broken.ipa", "de.test.broken", "1.0", "1", "Broken")   # fake 4-byte "binary"
+        st, d = call("PUT", "/api/v1/uploads?filename=broken.ipa", raw=(tmp / "broken.ipa").read_bytes())
+        st, bad = call("POST", f"/api/v1/builds/{d['build']['id']}/sign", {})
+        for _ in range(60):
+            st, bad = call("GET", f"/api/v1/signed/{bad['id']}?log=1")
+            if bad["status"] in ("fertig", "fehler"):
+                break
+            time.sleep(0.25)
+        check(bad["status"] == "fehler" and "Exit-Code" in bad["error"] and len(bad["error"]) > 15 and bad["log"],
+              f"failed signing gives a readable reason + log ({bad['error']})")
+
         st, devs = call("GET", "/api/v1/devices")
         check(devs["available"] and devs["devices"][0]["paired"], "device list")
         st, j = call("POST", f"/api/v1/signed/{s['id']}/install-usb", {"udid": udid})
