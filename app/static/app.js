@@ -35,9 +35,17 @@ const iconBadge = (a) => ({
 }[a.icon_status] || "");
 const originLabel = { release: "Release", artifact: "Artefakt", upload: "Upload", webdav: "WebDAV" };
 
+// "Abbrechen"/"Schließen" must close without form validation (required fields would block it)
+$("#modal-body").addEventListener("click", (e) => {
+  if (e.target.closest('button[value="cancel"]')) { e.preventDefault(); $("#modal").close(); }
+});
+// Click on the dark backdrop closes the dialog
+$("#modal").addEventListener("click", (e) => { if (e.target === $("#modal")) $("#modal").close(); });
+
 function modal(html, onSubmit) {
   const dlg = $("#modal"), form = $("#modal-body");
   form.innerHTML = html;
+  form.querySelectorAll('button[value="cancel"]').forEach((b) => { b.type = "button"; b.formNoValidate = true; });
   form.onsubmit = async (e) => {
     if (e.submitter?.value === "cancel") return;
     e.preventDefault();
