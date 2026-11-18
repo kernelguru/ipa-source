@@ -153,6 +153,8 @@ def main():
         (tmp / "signed.ipa").write_bytes(ipa)
         with zipfile.ZipFile(tmp / "signed.ipa") as z:
             names = z.namelist()
+            exe_mode = z.getinfo("Payload/T.app/T").external_attr >> 16
+        check(bool(exe_mode & 0o111), "app binary is executable in the signed IPA")
         check("Payload/T.app/_CodeSignature/CodeResources" in names and "Payload/T.app/embedded.mobileprovision" in names,
               "downloaded IPA is code-signed with embedded profile")
         st, _ = call("GET", "/install/doesnotexist/manifest.plist")

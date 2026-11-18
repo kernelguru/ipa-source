@@ -167,6 +167,12 @@ Ohne USB funktioniert immer die Installation per Link (OTA).
 
 Pro App und Zertifikat wird nur die neueste signierte Kopie aufbewahrt (`/data/signed`).
 
+**Speicherbedarf beim Signieren:** Der Server entpackt die IPA selbst, zsign signiert den Ordner, danach wird
+neu gepackt. Jede Datei wird gelöscht, sobald sie in der neuen IPA steckt. Nötig ist etwa *entpackte Größe +
+größte Einzeldatei* an freiem Platz in `/data`. Die entpackte Größe kann deutlich über der IPA-Größe liegen.
+Vor dem Start wird das geprüft und mit konkreten Zahlen gemeldet. ZIP64 (Dateien und IPAs über 4 GB) wird
+unterstützt, Programme und Frameworks behalten bzw. bekommen das Ausführrecht.
+
 ## Upload aus CI
 
 Token mit Scope `upload` erstellen (*Feed & Zugänge*), dann:

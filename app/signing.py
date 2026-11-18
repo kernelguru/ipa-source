@@ -15,7 +15,7 @@ import time
 import urllib.parse
 import uuid
 
-from . import certs, config, db, store
+from . import certs, config, db, ipapack, store
 from .db import jloads
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -113,41 +113,60 @@ def _sign(sid: int):
     a = db.one("SELECT * FROM apps WHERE id = ?", b["app_id"])
     c = certs.get(s["cert_id"])
     src = store.build_file(b)
-    need = int(b["size"] * 2.2) + 200 * 2**20
+    unpacked, largest = ipapack.uncompressed_size(src)
+    # extracted folder + growing output (files are deleted while packing) + headroom
+    need = unpacked + largest + 512 * 2**20
     free = shutil.disk_usage(config.DATA_DIR).free
     if need > free:
-        raise ValueError(f"Zu wenig Speicher zum Signieren: {need // 2**20} MB nötig, {free // 2**20} MB frei")
+        raise ValueError(f"Zu wenig Speicher zum Signieren: entpackt {unpacked / 2**30:.1f} GB, nötig ca. "
+                         f"{need / 2**30:.1f} GB, frei {free / 2**30:.1f} GB")
 
     db.execute("UPDATE signed SET status='läuft', error='', log='' WHERE id=?", sid)
     cdir = certs.cert_dir(c["id"])
     rel = f"{store.safe_name(a['bundle_id'])}/{sid}-{uuid.uuid4().hex[:8]}.ipa"
     out = config.SIGNED_DIR / rel
     out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = config.TMP_DIR / f"zsign-{sid}"
-    tmp.mkdir(parents=True, exist_ok=True)
-    new_bid = _target_bundle_id(c["app_id"], a["bundle_id"])
-    cmd = [zsign_path(), "-k", str(cdir / "cert.p12"), "-p", certs.decrypt(c["password_enc"]),
-           "-m", str(cdir / "profile.mobileprovision"), "-z", str(config.SIGN_ZIP_LEVEL),
-           "-t", str(tmp), "-o", str(out)]
-    if new_bid:
-        cmd += ["-b", new_bid]
-    cmd.append(str(src))
+    work = config.TMP_DIR / f"zsign-{sid}"
+    shutil.rmtree(work, ignore_errors=True)
+    lines = [f">>> IPA: {b['size'] / 2**30:.2f} GB, entpackt {unpacked / 2**30:.2f} GB, frei {free / 2**30:.1f} GB"]
     t0 = time.time()
+    raw, rc = "", 0
     try:
+        ipapack.extract(src, work, log=lines.append)
+        apps = sorted((work / "Payload").glob("*.app"))
+        if not apps:
+            raise ValueError("Kein Payload/*.app in der IPA")
+        new_bid = _target_bundle_id(c["app_id"], a["bundle_id"])
+        cmd = [zsign_path(), "-k", str(cdir / "cert.p12"), "-p", certs.decrypt(c["password_enc"]),
+               "-m", str(cdir / "profile.mobileprovision")]
+        if new_bid:
+            cmd += ["-b", new_bid]
+        cmd.append(str(apps[0]))             # sign the folder in place, no zsign archiving
         r = subprocess.run(cmd, capture_output=True, timeout=4 * 3600)
+        rc = r.returncode
         raw = (r.stdout or b"").decode("utf-8", "replace") + (r.stderr or b"").decode("utf-8", "replace")
-        log = ANSI.sub("", raw)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-    ok = r.returncode == 0 and out.exists() and out.stat().st_size > 0
-    if not ok:
+        if rc != 0:
+            msg = _zsign_error(raw, rc, out)
+            log = "\n".join(lines) + f"\n$ zsign … (Exit-Code {rc})\n" + ANSI.sub("", raw)
+            db.execute("UPDATE signed SET status='fehler', error=?, log=?, finished_at=? WHERE id=?",
+                       msg[:500], log[-8000:], db.now(), sid)
+            db.log_event("error", f"Signieren {a['name']} {b['version']}: {msg}")
+            return
+        for junk in (".zsign_cache", ".zsign_debug"):
+            shutil.rmtree(apps[0] / junk, ignore_errors=True)
+        ipapack.pack(work, out, level=config.SIGN_ZIP_LEVEL, delete=True, log=lines.append)
+    except OSError as e:
         out.unlink(missing_ok=True)
-        msg = _zsign_error(raw, r.returncode, out)
-        log = f"$ zsign … (Exit-Code {r.returncode})\n" + log
-        db.execute("UPDATE signed SET status='fehler', error=?, log=?, finished_at=? WHERE id=?",
-                   msg[:500], log[-8000:], db.now(), sid)
-        db.log_event("error", f"Signieren {a['name']} {b['version']}: {msg}")
-        return
+        out.with_name(out.name + ".part").unlink(missing_ok=True)
+        free_now = shutil.disk_usage(config.DATA_DIR).free
+        hint = " – Speicher voll" if e.errno == 28 or free_now < 512 * 2**20 else ""
+        raise ValueError(f"{e.strerror or e}{hint} (frei: {free_now / 2**30:.1f} GB)") from None
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    log = "\n".join(lines[:2]) + "\n" + ANSI.sub("", raw) + "\n".join(lines[2:])
+    if not out.exists() or out.stat().st_size == 0:
+        out.unlink(missing_ok=True)
+        raise ValueError("Signierte IPA ist leer – Speicherplatz in /data prüfen")
     db.execute("UPDATE signed SET status='fertig', path=?, size=?, bundle_id=?, log=?, finished_at=? WHERE id=?",
                rel, out.stat().st_size, new_bid or a["bundle_id"], log[-8000:], db.now(), sid)
     db.log_event("info", f"Signiert: {a['name']} {b['version']} ({b['build_version']}) mit „{c['name']}“ "

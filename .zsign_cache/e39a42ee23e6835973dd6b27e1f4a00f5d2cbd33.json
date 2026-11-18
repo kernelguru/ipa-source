@@ -1,0 +1,12 @@
+{
+	"path": "/",
+	"root": "/tmp/ipas/data/tmp/zsign-3/Payload/T.app",
+	"bundle_id": "de.test.huge",
+	"bundle_version": "1",
+	"bundle_executable": "T",
+	"sha1": "I4y6LCxeQkv6ULDHdu5B8qk5+So=",
+	"sha256": "gV+5BPJ/bZkV1MCAzKt+rA+Lm09/2/lv2SORyXjFi48=",
+	"name": "Huge",
+	"files": [ "T" ],
+	"changed": [ "T", "embedded.mobileprovision" ]
+}
