@@ -56,15 +56,31 @@ def _start_worker():
             _started = True
 
 
-def request_sign(build_id: int, cert_id: int, force=False) -> dict:
+BUNDLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$")
+
+
+def desired_bundle_id(app_bundle: str, cert, override: str = "") -> str:
+    """Like Feather: keep the app's bundle ID unless asked otherwise."""
+    if override:
+        if not BUNDLE_RE.match(override) or ".." in override:
+            raise ValueError("Ungültige Bundle-ID (nur Buchstaben, Ziffern, Punkt, Bindestrich)")
+        return override
+    if cert["adapt_bundle_id"]:
+        return _target_bundle_id(cert["app_id"], app_bundle) or app_bundle
+    return app_bundle
+
+
+def request_sign(build_id: int, cert_id: int, force=False, bundle_id: str = "") -> dict:
     b = db.one("SELECT * FROM builds WHERE id = ?", build_id)
     c = certs.get(cert_id)
     if not b or not c:
         raise ValueError("Build oder Zertifikat nicht gefunden")
     if not zsign_path():
         raise ValueError("zsign ist auf dem Server nicht installiert")
-    existing = db.one("SELECT * FROM signed WHERE build_id = ? AND cert_id = ? ORDER BY id DESC LIMIT 1",
-                      build_id, cert_id)
+    a = db.one("SELECT bundle_id FROM apps WHERE id = ?", b["app_id"])
+    want = desired_bundle_id(a["bundle_id"], c, (bundle_id or "").strip())
+    existing = db.one("SELECT * FROM signed WHERE build_id = ? AND cert_id = ? AND bundle_id = ? "
+                      "ORDER BY id DESC LIMIT 1", build_id, cert_id, want)
     if existing and not force:
         if existing["status"] in ("wartet", "läuft"):
             return existing
@@ -72,8 +88,8 @@ def request_sign(build_id: int, cert_id: int, force=False) -> dict:
                 and (config.SIGNED_DIR / existing["path"]).exists()):
             return existing
     sid = db.execute(
-        "INSERT INTO signed(build_id, cert_id, build_sha256, token, created_at) VALUES(?,?,?,?,?)",
-        build_id, cert_id, b["sha256"], secrets.token_urlsafe(24), db.now(),
+        "INSERT INTO signed(build_id, cert_id, bundle_id, build_sha256, token, created_at) VALUES(?,?,?,?,?,?)",
+        build_id, cert_id, want, b["sha256"], secrets.token_urlsafe(24), db.now(),
     )
     _start_worker()
     _q.put(sid)
@@ -136,7 +152,8 @@ def _sign(sid: int):
         apps = sorted((work / "Payload").glob("*.app"))
         if not apps:
             raise ValueError("Kein Payload/*.app in der IPA")
-        new_bid = _target_bundle_id(c["app_id"], a["bundle_id"])
+        want = s["bundle_id"] or a["bundle_id"]
+        new_bid = want if want != a["bundle_id"] else None
         cmd = [zsign_path(), "-k", str(cdir / "cert.p12"), "-p", certs.decrypt(c["password_enc"]),
                "-m", str(cdir / "profile.mobileprovision")]
         if new_bid:
@@ -173,8 +190,9 @@ def _sign(sid: int):
                          f"in {time.time() - t0:.0f} s")
     # keep only the newest signed copy per app + certificate
     for old in db.all_("""SELECT s.id, s.path FROM signed s JOIN builds b ON b.id = s.build_id
-                          WHERE b.app_id = ? AND s.cert_id = ? AND s.id != ? AND s.status IN ('fertig','fehler')""",
-                       a["id"], c["id"], sid):
+                          WHERE b.app_id = ? AND s.cert_id = ? AND s.bundle_id = ? AND s.id != ?
+                          AND s.status IN ('fertig','fehler')""",
+                       a["id"], c["id"], new_bid or a["bundle_id"], sid):
         if old["path"]:
             (config.SIGNED_DIR / old["path"]).unlink(missing_ok=True)
         db.execute("DELETE FROM signed WHERE id = ?", old["id"])

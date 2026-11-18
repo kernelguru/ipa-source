@@ -162,6 +162,24 @@ def main():
 
         st, again = call("POST", f"/api/v1/builds/{build_id}/sign", {})
         check(again["id"] == s["id"], "unchanged build reuses signed copy")
+        check(s["bundle_id"] == "de.test.signing", "bundle ID kept by default (like Feather)")
+
+        st, s2 = call("POST", f"/api/v1/builds/{build_id}/sign", {"bundle_id": "de.test.signing.zwei"})
+        for _ in range(60):
+            st, s2 = call("GET", f"/api/v1/signed/{s2['id']}")
+            if s2["status"] in ("fertig", "fehler"):
+                break
+            time.sleep(0.25)
+        st, ipa2 = call("GET", "/install/" + s2["install_page"].rsplit("/", 1)[1] + "/app.ipa")
+        (tmp / "s2.ipa").write_bytes(ipa2)
+        with zipfile.ZipFile(tmp / "s2.ipa") as z:
+            bid2 = plistlib.loads(z.read("Payload/T.app/Info.plist"))["CFBundleIdentifier"]
+        st, lst = call("GET", "/api/v1/signed")
+        check(s2["status"] == "fertig" and bid2 == "de.test.signing.zwei"
+              and {x["bundle_id"] for x in lst["signed"] if x["status"] == "fertig"} >= {"de.test.signing", "de.test.signing.zwei"},
+              "custom bundle ID signed as a second copy, first copy kept")
+        st, bad = call("POST", f"/api/v1/builds/{build_id}/sign", {"bundle_id": "nope nope"})
+        check(st == 400, "invalid bundle ID rejected")
 
         make(tmp / "broken.ipa", "de.test.broken", "1.0", "1", "Broken")   # fake 4-byte "binary"
         st, d = call("PUT", "/api/v1/uploads?filename=broken.ipa", raw=(tmp / "broken.ipa").read_bytes())

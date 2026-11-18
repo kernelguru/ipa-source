@@ -170,6 +170,7 @@ def public(c) -> dict:
                              "profile_name", "profile_uuid", "profile_expires", "profile_type", "app_id",
                              "created_at")},
         "is_default": bool(c["is_default"]),
+        "adapt_bundle_id": bool(c["adapt_bundle_id"]),
         "devices": jloads(c["devices"], []),
         "expired": bool((c["cert_expires"] and c["cert_expires"] < now) or
                         (c["profile_expires"] and c["profile_expires"] < now)),

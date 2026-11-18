@@ -1,0 +1,12 @@
+{
+	"path": "/",
+	"root": "/tmp/tmp92hlg5uk/data/tmp/zsign-2/Payload/T.app",
+	"bundle_id": "de.test.signing.zwei",
+	"bundle_version": "21",
+	"bundle_executable": "T",
+	"sha1": "u8mWzk2DGY6PMqUUw3VQNdIbwI0=",
+	"sha256": "sX77IhRCUF3lqWlhB5iPqPVpb4x3Jahi9+fd5E6JAaQ=",
+	"name": "SignTest",
+	"files": [ "T" ],
+	"changed": [ "T", "embedded.mobileprovision" ]
+}

@@ -768,19 +768,24 @@ async def cert_detail(request):
         certs.set_default(cid)
     if data.get("name"):
         db.execute("UPDATE certs SET name = ? WHERE id = ?", str(data["name"]), cid)
+    if "adapt_bundle_id" in data:
+        db.execute("UPDATE certs SET adapt_bundle_id = ? WHERE id = ?", b(data["adapt_bundle_id"]), cid)
     return JSONResponse(certs.public(certs.get(cid)))
 
 
 @endpoint("full")
 async def build_sign(request):
-    """POST {cert_id?, force?} -> signed job (poll GET /signed/{id})."""
+    """POST {cert_id?, force?, bundle_id?} -> signed job (poll GET /signed/{id}).
+    The app keeps its bundle ID (like Feather) unless bundle_id is given or the
+    certificate is set to adapt it to the profile's App ID."""
     bid = int(request.path_params["id"])
     get_or_404("SELECT id FROM builds WHERE id = ?", bid)
     data = await body(request) if await request.body() else {}
     cid = data.get("cert_id") or (certs.default() or {}).get("id")
     if not cid:
         raise ApiError(400, "no_cert", "Kein Signier-Zertifikat hinterlegt")
-    s = await run_in_threadpool(signing.request_sign, bid, int(cid), bool(data.get("force")))
+    s = await run_in_threadpool(signing.request_sign, bid, int(cid), bool(data.get("force")),
+                                str(data.get("bundle_id") or ""))
     return JSONResponse(signing.public(s, feed.base_url(request)), status_code=202)
 
 

@@ -369,6 +369,10 @@ async function signFlow(build, app) {
   const form = modal(`<h2>${esc(app.name)} ${esc(build.version)} (${esc(build.build_version)})</h2>
     <p class="muted small">Der Server signiert die IPA mit deinem Zertifikat. Danach installierst du sie direkt per Link auf dem iPhone oder per USB-Kabel am Server.</p>
     ${list.length > 1 ? `<div><label>Zertifikat</label><select name="cert">${list.map((c) => `<option value="${c.id}" ${c.is_default ? "selected" : ""}>${esc(c.name)} – ${typeLabel[c.profile_type] || c.profile_type}${c.expired ? " (abgelaufen)" : ""}</option>`).join("")}</select></div>` : `<div class="muted small">Zertifikat: <b>${esc(list[0].name)}</b></div>`}
+    <details style="margin-top:10px"><summary class="small">Erweitert</summary>
+      <div style="margin-top:8px"><label>Bundle-ID (leer = unverändert ${esc(app.bundle_id)})</label>
+      <input name="bundle_id" placeholder="z. B. ${esc(app.bundle_id)}.zweit" autocomplete="off" autocapitalize="off">
+      <div class="muted small">Eine andere Bundle-ID installiert die App zusätzlich statt sie zu ersetzen.</div></div></details>
     <div id="signstate" class="stack" style="margin-top:14px"></div>
     <div class="row" style="margin-top:16px"><button class="primary" id="dosign">Signieren</button><button value="cancel">Schließen</button></div>`);
   const stateEl = $("#signstate", form);
@@ -391,7 +395,8 @@ async function signFlow(build, app) {
     e.preventDefault();
     $("#dosign", form).disabled = true;
     const cert = form.querySelector("[name=cert]")?.value;
-    const s = await api("POST", `/builds/${build.id}/sign`, cert ? { cert_id: +cert } : {});
+    const bid = form.querySelector("[name=bundle_id]")?.value.trim();
+    const s = await api("POST", `/builds/${build.id}/sign`, { ...(cert ? { cert_id: +cert } : {}), ...(bid ? { bundle_id: bid } : {}) });
     poll(s.id);
   });
 }
@@ -442,7 +447,8 @@ async function renderSigning() {
         <td class="small">${typeLabel[c.profile_type] || esc(c.profile_type)}</td>
         <td class="small">Zert.: ${fmtDate(c.cert_expires)}<br>Profil: ${fmtDate(c.profile_expires)} ${c.expired ? '<span class="badge err">abgelaufen</span>' : ""}</td>
         <td class="small">${c.profile_type === "enterprise" ? "alle" : c.devices.length}</td>
-        <td class="row" style="justify-content:flex-end">${c.is_default ? "" : '<button class="sm" data-def>Als Standard</button>'}<button class="sm danger" data-del>Löschen</button></td></tr>`).join("")}</tbody></table>`
+        <td class="row" style="justify-content:flex-end">${c.wildcard ? "" : `<label class="check small" title="Nur nötig, wenn Apps mit Original-Bundle-ID nicht installieren. Dann ersetzen sich alle Apps dieses Profils gegenseitig."><input type="checkbox" data-adapt ${c.adapt_bundle_id ? "checked" : ""}> Bundle-ID an Profil anpassen</label>`}
+          ${c.is_default ? "" : '<button class="sm" data-def>Als Standard</button>'}<button class="sm danger" data-del>Löschen</button></td></tr>`).join("")}</tbody></table>`
         : '<div class="muted">Noch kein Zertifikat. Du brauchst die .p12-Datei, ihr Passwort und das passende Provisioning-Profil (.mobileprovision).</div>'}
       <div class="muted small" style="margin-top:10px">Das Passwort wird verschlüsselt gespeichert; die Dateien liegen nur auf deinem Server (<code>/data/certs</code>).</div></div>
 
@@ -455,7 +461,7 @@ async function renderSigning() {
 
     <div class="panel"><h2>Signierte IPAs</h2>
       ${signed.length ? `<table><thead><tr><th>App</th><th>Zertifikat</th><th>Status</th><th></th></tr></thead><tbody>${signed.map((x) => `<tr data-sid="${x.id}">
-        <td><a href="#/app/${x.app_id}"><b>${esc(x.app_name)}</b></a> ${esc(x.version)} (${esc(x.build_version)})<div class="muted small">${fmtDate(x.finished_at || x.created_at)}${x.size ? " · " + fmtSize(x.size) : ""}</div></td>
+        <td><a href="#/app/${x.app_id}"><b>${esc(x.app_name)}</b></a> ${esc(x.version)} (${esc(x.build_version)})<div class="muted small mono">${esc(x.bundle_id)}</div><div class="muted small">${fmtDate(x.finished_at || x.created_at)}${x.size ? " · " + fmtSize(x.size) : ""}</div></td>
         <td class="small">${esc(x.cert_name)}</td>
         <td>${x.status === "fertig" ? `<span class="badge release">bereit</span>${x.outdated ? ' <span class="badge">veraltet</span>' : ""}` : x.status === "fehler" ? `<span class="badge err" title="${esc(x.error)}">Fehler</span>` : `<span class="badge">${esc(x.status)}</span>`}</td>
         <td class="row" style="justify-content:flex-end">${x.status === "fertig" ? '<button class="sm primary" data-inst>Installieren</button>' : ""}${x.status === "fehler" ? '<button class="sm" data-log>Log</button>' : ""}<button class="sm danger" data-sdel>Löschen</button></td></tr>`).join("")}</tbody></table>`
@@ -473,6 +479,7 @@ async function renderSigning() {
   $$("tr[data-id]").forEach((tr) => {
     const id = tr.dataset.id;
     $("[data-def]", tr)?.addEventListener("click", guard(async () => { await api("PATCH", `/certs/${id}`, { is_default: true }); renderSigning(); }));
+    $("[data-adapt]", tr)?.addEventListener("change", guard(async (e) => { await api("PATCH", `/certs/${id}`, { adapt_bundle_id: e.target.checked }); toast("Gespeichert – gilt fürs nächste Signieren"); }));
     $("[data-del]", tr).onclick = guard(async () => { if (!confirm("Zertifikat und alle damit signierten IPAs löschen?")) return; await api("DELETE", `/certs/${id}`); renderSigning(); });
   });
   $$("tr[data-udid]").forEach((tr) => {

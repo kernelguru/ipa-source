@@ -167,6 +167,10 @@ SCHEMA = [
         finished_at TEXT
     );
     """,
+    # v5: bundle ID policy per certificate
+    """
+    ALTER TABLE certs ADD COLUMN adapt_bundle_id INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 

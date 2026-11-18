@@ -132,7 +132,13 @@ Das Passwort wird verschlüsselt in der Datenbank gespeichert, die Dateien liege
 `/data/certs`. Wer Zugriff auf das komplette Volume hat (inkl. `secret.key`), kann es entschlüsseln.
 
 Auf der App-Seite bei einem Build auf **Installieren** tippen. Der Server signiert mit zsign (1,5 GB in etwa 10 s,
-Stufe `SIGN_ZIP_LEVEL=0`). Passt die Bundle-ID nicht zur App-ID des Profils, wird sie automatisch angepasst.
+Stufe `SIGN_ZIP_LEVEL=0`).
+
+**Bundle-ID:** Wie bei Feather/KravaSign behält die App ihre Bundle-ID, auch wenn das Profil eine explizite App-ID hat.
+Die Entitlements kommen aus dem Profil. So lassen sich mit einem Zertifikat mehrere Apps nebeneinander installieren.
+Unter *Erweitert* im Signier-Dialog kann eine eigene Bundle-ID gesetzt werden (installiert die App ein zweites Mal).
+Pro Zertifikat gibt es den Schalter „Bundle-ID an Profil anpassen“, nur für Profile, die das wirklich verlangen.
+Dann ersetzen sich aber alle Apps dieses Profils gegenseitig.
 Danach gibt es zwei Wege:
 
 **1. Per Link (OTA):** Auf dem iPhone in Safari „Auf diesem Gerät installieren“ antippen, oder vom Rechner den Link
