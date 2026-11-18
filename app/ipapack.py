@@ -80,6 +80,10 @@ def pack(root: Path, out: Path, level: int = 0, delete: bool = True, log=print):
                     zi.external_attr = (stat.S_IFLNK | 0o777) << 16
                     z.writestr(zi, os.readlink(full))
                 else:
+                    with open(full, "rb") as fh:
+                        head = fh.read(4)
+                    if head in MACHO_MAGIC:
+                        os.chmod(full, os.stat(full).st_mode | 0o755)   # zsign rewrites binaries as 0644
                     z.write(full, arc)
                 if delete:
                     os.unlink(full)
