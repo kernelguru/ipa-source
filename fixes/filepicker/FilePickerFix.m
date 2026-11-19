@@ -13,6 +13,9 @@
 //                                                     (copied files are not security-scoped,
 //                                                      some apps refuse to continue on NO)
 
+// We deliberately hook the deprecated (pre-iOS 14) picker API as well – many apps still use it.
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -78,10 +81,7 @@ __attribute__((constructor)) static void FPFInit(void) {
         if (picker) {
             FPFSwizzle(picker, @selector(initForOpeningContentTypes:asCopy:), (IMP)fpf_initTypesAsCopy, &orig_initTypesAsCopy);
             FPFSwizzle(picker, @selector(initForOpeningContentTypes:), (IMP)fpf_initTypes, &orig_initTypes);
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
             FPFSwizzle(picker, @selector(initWithDocumentTypes:inMode:), (IMP)fpf_initDocTypesMode, &orig_initDocTypesMode);
-#pragma clang diagnostic pop
         }
         FPFSwizzle([NSURL class], @selector(startAccessingSecurityScopedResource), (IMP)fpf_startAccessing, &orig_startAccessing);
         NSLog(@"[FilePickerFix] active");
