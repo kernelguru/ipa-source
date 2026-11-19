@@ -12,7 +12,8 @@
 //   push      (--udid U | --ip IP --pairing FILE) --bundle ID --path REL --file FILE
 //   verify    --ip IP --pairing FILE               Wi-Fi: check a lockdown pairing file
 //   rpverify  --ip IP --port N --rp FILE --host NAME   Wi-Fi: check an RPPairing file
-//   wifipair  --ip IP --port N --host NAME --out FILE --pin-file FILE [--timeout S]
+//   wifiaccept --name NAME --out FILE [--port N] [--timeout S]
+//             iOS 27+: advertise as pairable computer, the iPhone connects, we show the PIN
 //   discover  [--timeout S]                        mDNS: _apple-mobdev2 + _remotepairing
 
 use std::{
@@ -32,7 +33,10 @@ use idevice::{
     lockdown::LockdownClient,
     pairing_file::PairingFile,
     provider::{IdeviceProvider, TcpProvider},
-    remote_pairing::{RemotePairingClient, RemotePairingLockdownService, RpPairingFile, RpPairingSocket},
+    remote_pairing::{
+        PAIRABLE_HOST_SERVICE_TYPE, PairableHost, PairableHostInfo, RemotePairingClient,
+        RemotePairingLockdownService, RpPairingFile, RpPairingSocket,
+    },
     rsd::RsdHandshake,
     usbmuxd::UsbmuxdAddr,
 };
@@ -344,35 +348,73 @@ async fn cmd_rpverify(a: &Args) -> Res<Value> {
     Ok(json!({"valid": true}))
 }
 
-async fn wait_pin(path: String, timeout: u64) -> String {
-    emit(json!({"event": "pin", "message": "PIN vom iPhone eingeben"}));
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
-    while tokio::time::Instant::now() < deadline {
-        if let Ok(s) = tokio::fs::read_to_string(&path).await {
-            let pin = s.trim().to_string();
-            if !pin.is_empty() {
-                let _ = tokio::fs::remove_file(&path).await;
-                return pin;
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(400)).await;
-    }
-    "000000".to_string()
-}
-
-async fn cmd_wifipair(a: &Args) -> Res<Value> {
-    let host = a.req("host")?.to_string();
+/// iOS 27+ device-initiated pairing: we advertise `_remotepairing-pairable-host._tcp`,
+/// the iPhone offers "pair with <name>", connects to us and the user types the PIN we show.
+async fn cmd_wifiaccept(a: &Args) -> Res<Value> {
+    use mdns_sd::{ServiceDaemon, ServiceInfo};
+    let name = a.req("name")?.to_string();
     let out = a.req("out")?;
-    let pin_file = a.req("pin-file")?.to_string();
-    let timeout: u64 = a.get("timeout").and_then(|t| t.parse().ok()).unwrap_or(180);
-    let stream = tcp(a).await?;
-    emit(json!({"event": "trust", "message": "Am iPhone „Vertrauen“ bestätigen"}));
-    let mut rpf = RpPairingFile::generate(&host);
-    let mut client = RemotePairingClient::new(RpPairingSocket::new(stream), &host);
-    let cb = move || wait_pin(pin_file.clone(), timeout);
-    client.connect(&mut rpf, cb).await.map_err(|e| format!("WLAN-Kopplung: {e:?}"))?;
-    rpf.write_to_file(out).await.map_err(|e| format!("write {out}: {e}"))?;
-    Ok(json!({"identifier": rpf.identifier}))
+    let port: u16 = a.get("port").and_then(|p| p.parse().ok()).unwrap_or(0);
+    let timeout: u64 = a.get("timeout").and_then(|t| t.parse().ok()).unwrap_or(300);
+
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+        .await
+        .map_err(|e| format!("Port {port}: {e}"))?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+
+    let info = PairableHostInfo::generate(name.clone(), "Mac17,7");
+    let mut rpf = RpPairingFile::generate(&name);
+    let ident = rpf.identifier.clone();
+    let txt = info.mdns_txt_records(&ident);
+    let props: Vec<(&str, &str)> = txt.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+
+    let daemon = ServiceDaemon::new().map_err(|e| format!("mDNS: {e}"))?;
+    let _ = daemon.set_service_name_len_max(63);
+    let short: String = ident.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect();
+    let svc = ServiceInfo::new(
+        PAIRABLE_HOST_SERVICE_TYPE,
+        &ident,
+        &format!("ipas-{short}.local."),
+        "",
+        port,
+        &props[..],
+    )
+    .map_err(|e| format!("mDNS-Dienst: {e}"))?
+    .enable_addr_auto();
+    let fullname = svc.get_fullname().to_string();
+    daemon.register(svc).map_err(|e| format!("mDNS-Anmeldung: {e}"))?;
+    emit(json!({"event": "advertising", "port": port,
+                "message": format!("Warte auf das iPhone – dort „{name}“ zum Koppeln wählen")}));
+
+    let result = async {
+        let (stream, peer_addr) = tokio::time::timeout(Duration::from_secs(timeout), listener.accept())
+            .await
+            .map_err(|_| "Zeitüberschreitung – kein iPhone hat sich verbunden".to_string())?
+            .map_err(|e| format!("accept: {e}"))?;
+        progress(&format!("iPhone verbunden ({})", peer_addr.ip()));
+        let mut host = PairableHost::new(RpPairingSocket::new_device(stream), info.clone());
+        let peer = host
+            .accept(&mut rpf, |pin| async move {
+                emit(json!({"event": "show_pin", "pin": pin,
+                            "message": "PIN am iPhone eingeben"}));
+            })
+            .await
+            .map_err(|e| format!("Kopplung: {e:?}"))?;
+        rpf.write_to_file(out).await.map_err(|e| format!("write {out}: {e}"))?;
+        Ok::<Value, String>(json!({
+            "udid": peer.remotepairing_udid,
+            "name": peer.name,
+            "model": peer.model,
+            "ip": peer_addr.ip().to_string(),
+            "identifier": rpf.identifier,
+        }))
+    }
+    .await;
+
+    let _ = daemon.unregister(&fullname);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let _ = daemon.shutdown();
+    result
 }
 
 fn cmd_discover(a: &Args) -> Res<Value> {
@@ -435,7 +477,7 @@ async fn main() {
         "push" => cmd_push(&args).await,
         "verify" => cmd_verify(&args).await,
         "rpverify" => cmd_rpverify(&args).await,
-        "wifipair" => cmd_wifipair(&args).await,
+        "wifiaccept" => cmd_wifiaccept(&args).await,
         "discover" => tokio::task::spawn_blocking(move || cmd_discover(&args))
             .await
             .unwrap_or_else(|e| Err(e.to_string())),
