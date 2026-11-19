@@ -1,0 +1,31 @@
+[package]
+name = "ipas-pair"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Pairing-file helper for ipa-source (lockdown + RPPairing, USB and Wi-Fi)"
+
+[dependencies]
+idevice = { version = "0.1.68", default-features = false, features = [
+  "afc",
+  "core_device_proxy",
+  "house_arrest",
+  "installation_proxy",
+  "pair",
+  "remote_pairing",
+  "ring",
+  "rsd",
+  "tcp",
+  "tunnel_tcp_stack",
+  "usbmuxd",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "fs", "io-util"] }
+mdns-sd = "0.21"
+plist = "1"
+serde_json = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1

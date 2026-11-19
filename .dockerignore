@@ -3,3 +3,4 @@ data
 .env
 tests
 __pycache__
+helpers/ipas-pair/target

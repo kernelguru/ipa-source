@@ -1,0 +1,25 @@
+name: ipas-pair helper
+
+on:
+  push:
+    paths: ["helpers/**", ".github/workflows/helper.yml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: helpers/ipas-pair
+      - name: cargo build
+        working-directory: helpers/ipas-pair
+        run: cargo build --release 2>&1 | tail -n 200
+        shell: bash -o pipefail {0}
+      - name: smoke test
+        working-directory: helpers/ipas-pair
+        run: |
+          ./target/release/ipas-pair version
+          ./target/release/ipas-pair discover --timeout 1
+          ls -la target/release/ipas-pair

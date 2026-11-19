@@ -7,6 +7,27 @@ RUN apt-get update \
  && make -C /src/zsign/build/linux -j"$(nproc)" VERSION="${ZSIGN_VERSION#v}" \
  && /src/zsign/bin/zsign -v
 
+# ------------------------------------------------------------ ipas-pair --
+# Pairing-file helper (Rust, idevice crate). Cross-compiled on the build
+# platform so the arm64 image does not need a slow emulated cargo build.
+FROM --platform=$BUILDPLATFORM rust:1-slim-bookworm AS ipaspair
+ARG TARGETARCH
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY helpers/ipas-pair ./
+RUN set -eux; \
+    case "$TARGETARCH" in \
+      arm64) T=aarch64-unknown-linux-gnu; \
+             export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+                    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc ;; \
+      *)     T=x86_64-unknown-linux-gnu ;; \
+    esac; \
+    rustup target add "$T"; \
+    cargo build --release --target "$T"; \
+    cp "target/$T/release/ipas-pair" /ipas-pair
+
 # ------------------------------------------------------------------ app --
 FROM python:3.13-slim
 
@@ -15,6 +36,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends libimobiledevice-utils ideviceinstaller usbmuxd \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=zsign /src/zsign/bin/zsign /usr/local/bin/zsign
+COPY --from=ipaspair /ipas-pair /usr/local/bin/ipas-pair
 
 WORKDIR /srv
 COPY requirements.txt .
