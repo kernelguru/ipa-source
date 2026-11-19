@@ -3,7 +3,7 @@ import os
 import secrets
 from pathlib import Path
 
-VERSION = "0.6.2"
+VERSION = "0.7.0"
 API_VERSION = "v1"
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data")).resolve()
@@ -35,6 +35,8 @@ ZSIGN_BIN = os.environ.get("ZSIGN_BIN", "zsign")
 SIGN_ZIP_LEVEL = int(os.environ.get("SIGN_ZIP_LEVEL", "0"))     # 0 = store: fastest, fine for LAN
 IDEVICEINSTALLER_BIN = os.environ.get("IDEVICEINSTALLER_BIN", "ideviceinstaller")
 IDEVICE_BIN_DIR = os.environ.get("IDEVICE_BIN_DIR", "")         # dir with idevice_id, ideviceinfo, idevicepair
+IPAS_PAIR_BIN = os.environ.get("IPAS_PAIR_BIN", "ipas-pair")             # pairing helper (Rust)
+PAIRING_HOST_NAME = os.environ.get("PAIRING_HOST_NAME", "ipa-source")   # name shown on the iPhone
 # Injectable fix libraries (built by .github/workflows/fixes.yml)
 FIXES_DIR = Path(os.environ.get("FIXES_DIR", str(Path(__file__).resolve().parent.parent / "fixes" / "bin")))
 

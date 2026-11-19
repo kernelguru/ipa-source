@@ -14,7 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from . import auth, certs, config, db, downloader, feed, github, providers, signing, store, sync, uploads
+from . import auth, certs, config, db, downloader, feed, github, pairing, providers, signing, store, sync, uploads
 from . import ipa as ipa_mod
 from .db import jloads
 
@@ -845,6 +845,104 @@ async def device_pair(request):
     return JSONResponse({"ok": ok, "message": msg}, status_code=200 if ok else 409)
 
 
+# ================================================================= pairing
+async def _pcall(fn, *args, **kw):
+    try:
+        return await run_in_threadpool(fn, *args, **kw)
+    except LookupError as e:
+        raise ApiError(404, "not_found", str(e))
+    except RuntimeError as e:
+        raise ApiError(502, "device", str(e))
+
+
+@endpoint("full")
+async def pairing_status(request):
+    return JSONResponse(await run_in_threadpool(pairing.status))
+
+
+@endpoint("full")
+async def pairing_usb(request):
+    b = await body(request)
+    jid = await _pcall(pairing.start_usb, str(b.get("udid") or ""), b.get("kind") or "lockdown",
+                       bool(b.get("wifi", True)))
+    return JSONResponse({"job": jid}, status_code=202)
+
+
+@endpoint("full")
+async def pairing_job(request):
+    j = pairing.job(request.path_params["jid"])
+    if not j:
+        raise ApiError(404, "not_found", "Auftrag unbekannt (Server neu gestartet?)")
+    return JSONResponse(j)
+
+
+@endpoint("full")
+async def pairing_job_pin(request):
+    b = await body(request)
+    pairing.submit_pin(request.path_params["jid"], str(b.get("pin") or ""))
+    return JSONResponse({"ok": True})
+
+
+@endpoint("full")
+async def pairing_discover(request):
+    t = min(max(int(request.query_params.get("timeout", 4)), 1), 15)
+    return JSONResponse({"services": await _pcall(pairing.discover, t)})
+
+
+@endpoint("full")
+async def pairing_wifi(request):
+    b = await body(request)
+    jid = await _pcall(pairing.start_wifipair, str(b.get("ip") or ""), int(b.get("port") or 0),
+                       str(b.get("udid") or ""))
+    return JSONResponse({"job": jid}, status_code=202)
+
+
+@endpoint("full")
+async def pairing_detail(request):
+    pid = request.path_params["id"]
+    if request.method == "DELETE":
+        await run_in_threadpool(pairing.delete, pid)
+        return JSONResponse({"ok": True})
+    r = await _pcall(pairing._row, pid)
+    return JSONResponse(pairing.public(r))
+
+
+@endpoint("full")
+async def pairing_file(request):
+    name, data = await _pcall(pairing.file_bytes, request.path_params["id"])
+    db.log_event("info", f"Pairing-Datei {name} heruntergeladen")
+    return Response(data, media_type="application/x-plist", headers={
+        "Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
+
+@endpoint("full")
+async def pairing_apps(request):
+    q = request.query_params
+    return JSONResponse({"apps": await _pcall(pairing.apps, request.path_params["id"], q.get("via", "usb"),
+                                              q.get("ip", ""), q.get("all") == "1")})
+
+
+@endpoint("full")
+async def pairing_push(request):
+    b = await body(request)
+    res = await _pcall(pairing.push, request.path_params["id"], str(b.get("bundle_id") or ""),
+                       str(b.get("path") or ""), b.get("via") or "usb", str(b.get("ip") or ""),
+                       str(b.get("name") or ""))
+    return JSONResponse(res)
+
+
+@endpoint("full")
+async def pairing_verify(request):
+    b = await body(request)
+    return JSONResponse(await _pcall(pairing.verify_wifi, request.path_params["id"], str(b.get("ip") or "")))
+
+
+@endpoint("full")
+async def pairing_renew(request):
+    b = await body(request)
+    return JSONResponse(await _pcall(pairing.renew_wifi, request.path_params["id"], str(b.get("ip") or "")))
+
+
 # ================================================================= downloads
 def _download_json(d, request):
     out = dict(d)
@@ -1006,4 +1104,16 @@ def routes():
         Route(p + "/jobs/{jid}", install_job, methods=["GET"]),
         Route(p + "/devices", devices, methods=["GET"]),
         Route(p + "/devices/{udid}/pair", device_pair, methods=["POST"]),
+        Route(p + "/pairing", pairing_status, methods=["GET"]),
+        Route(p + "/pairing/usb", pairing_usb, methods=["POST"]),
+        Route(p + "/pairing/wifi", pairing_wifi, methods=["POST"]),
+        Route(p + "/pairing/discover", pairing_discover, methods=["GET"]),
+        Route(p + "/pairing/jobs/{jid}", pairing_job, methods=["GET"]),
+        Route(p + "/pairing/jobs/{jid}/pin", pairing_job_pin, methods=["POST"]),
+        Route(p + "/pairing/{id:int}", pairing_detail, methods=["GET", "DELETE"]),
+        Route(p + "/pairing/{id:int}/file", pairing_file, methods=["GET"]),
+        Route(p + "/pairing/{id:int}/apps", pairing_apps, methods=["GET"]),
+        Route(p + "/pairing/{id:int}/push", pairing_push, methods=["POST"]),
+        Route(p + "/pairing/{id:int}/verify", pairing_verify, methods=["POST"]),
+        Route(p + "/pairing/{id:int}/renew", pairing_renew, methods=["POST"]),
     ]

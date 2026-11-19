@@ -185,6 +185,33 @@ größte Einzeldatei* an freiem Platz in `/data`. Die entpackte Größe kann deu
 Vor dem Start wird das geprüft und mit konkreten Zahlen gemeldet. ZIP64 (Dateien und IPAs über 4 GB) wird
 unterstützt, Programme und Frameworks behalten bzw. bekommen das Ausführrecht.
 
+## Pairing-Dateien (StikDebug, SideStore, Feather …)
+
+Seite **Pairing-Dateien**: iPhone per USB an den Server (wie bei der USB-Installation, usbmuxd muss
+eingebunden sein), einmal koppeln, dann:
+
+- **Pairing-Datei** (klassisch, `UDID.plist`): Pair-Record des Servers plus UDID. Optional wird dabei
+  *WLAN-Debugging* eingeschaltet, damit StikDebug & Co. danach ohne Kabel arbeiten.
+- **RPPairing** (iOS 17.4+): das neue Format, wird über USB ohne weitere Abfrage erzeugt.
+- **In App schreiben**: listet die installierten Apps und schreibt die Datei direkt in deren Dokumente
+  (StikDebug, StikStore, Feather, Ksign, SideStore, LiveContainer, Antrag, Protokolle, SparseBox, EnsWilde,
+  Reynard, StosDebug …). Mit „alle Apps zeigen“ auch beliebige Ziele.
+- **WLAN prüfen / WLAN erneuern**: sucht das iPhone im WLAN, prüft, ob es die Kopplung noch akzeptiert, und
+  schreibt die Datei erneut in alle Apps, in die sie schon einmal ging (z. B. nach einer Neuinstallation von StikDebug).
+- **Koppeln über WLAN** ohne Kabel geht nur mit RPPairing ab **iOS 27** (PIN vom iPhone eingeben).
+  Die klassische Kopplung braucht beim ersten Mal immer USB.
+
+Das iPhone wird im WLAN per mDNS gefunden. Dafür muss der Container im Host-Netz laufen
+(`network_mode: host`, dann entfällt `ports:`), sonst die IP von Hand eintragen. Der Server merkt sich die
+zuletzt gefundene IP.
+
+Die Dateien liegen verschlüsselt in der Datenbank (Schlüssel `/data/secret.key`) und lassen sich jederzeit
+löschen. **Wer eine Pairing-Datei hat, kann das iPhone im Netz steuern** – nicht weitergeben und
+`/api/v1/pairing` im Reverse-Proxy nicht freigeben.
+
+Werkzeug: `helpers/ipas-pair` (Rust, auf Basis der MIT-lizenzierten Bibliothek
+[idevice](https://github.com/jkcoxson/idevice)), wird beim Docker-Build mitgebaut.
+
 ## Upload aus CI
 
 Token mit Scope `upload` erstellen (*Feed & Zugänge*), dann:

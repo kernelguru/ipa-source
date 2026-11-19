@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""Fake ipas-pair for tests: same JSON-lines protocol as the Rust helper."""
+import json, os, sys, time
+
+def out(**kw):
+    print(json.dumps(kw), flush=True)
+
+args = sys.argv[1:]
+cmd = args[0]
+f = {args[i][2:]: args[i + 1] for i in range(1, len(args) - 1, 2)}
+log = os.environ.get("FAKE_PAIR_LOG")
+if log:
+    with open(log, "a") as fh:
+        fh.write(json.dumps({"cmd": cmd, **f}) + "\n")
+DEV = {"DeviceName": "Marcs iPhone", "ProductVersion": "26.1", "ProductType": "iPhone16,2",
+       "WiFiAddress": "AA:BB:CC:DD:EE:FF", "UniqueDeviceID": "00008110-001A2B3C4D5E801E"}
+if cmd == "lockdown":
+    out(event="progress", message="Lese Pair-Record von usbmuxd")
+    open(f["out"], "wb").write(b"<plist>lockdown " + f["udid"].encode() + b"</plist>")
+    out(ok=True, device=DEV, wifi_debugging=True, bytes=40)
+elif cmd == "rppair":
+    open(f["out"], "wb").write(b"<plist>rp</plist>")
+    out(ok=True, via="lockdown", identifier="X")
+elif cmd == "apps":
+    out(ok=True, apps=[{"bundle_id": "com.stik.sj", "name": "StikDebug", "bundle_name": "StikDebug", "version": "2.0", "file_sharing": True},
+                       {"bundle_id": "com.example.other", "name": "Other", "bundle_name": "Other", "version": "1", "file_sharing": False}])
+elif cmd == "push":
+    data = open(f["file"], "rb").read()
+    out(ok=True, path="/Documents/" + f["path"], via="documents", size=len(data))
+elif cmd == "verify":
+    if f["ip"] != "192.168.1.50":
+        out(ok=False, error="Zeitüberschreitung"); sys.exit(1)
+    out(ok=True, device=DEV)
+elif cmd == "discover":
+    out(ok=True, services=[
+        {"type": "apple-mobdev2", "fullname": "aa:bb:cc:dd:ee:ff@fe80::1._apple-mobdev2._tcp.local.", "host": "iPhone.local.",
+         "port": 32498, "ipv4": ["192.168.1.50"], "addresses": ["192.168.1.50"], "txt": {}},
+        {"type": "remotepairing", "fullname": "x._remotepairing._tcp.local.", "host": "iPhone.local.",
+         "port": 49152, "ipv4": ["192.168.1.50"], "addresses": ["192.168.1.50"], "txt": {}}])
+elif cmd == "rpverify":
+    out(ok=True, valid=True)
+elif cmd == "wifipair":
+    out(event="pin", message="PIN vom iPhone eingeben")
+    for _ in range(100):
+        if os.path.exists(f["pin-file"]):
+            pin = open(f["pin-file"]).read().strip()
+            if pin:
+                break
+        time.sleep(0.1)
+    else:
+        out(ok=False, error="keine PIN"); sys.exit(1)
+    if pin != "123456":
+        out(ok=False, error="falsche PIN"); sys.exit(1)
+    open(f["out"], "wb").write(b"<plist>wifi-rp</plist>")
+    out(ok=True, identifier="Y")
+else:
+    out(ok=False, error="unknown"); sys.exit(1)

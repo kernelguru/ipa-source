@@ -176,6 +176,29 @@ SCHEMA = [
     ALTER TABLE apps ADD COLUMN sign_options TEXT NOT NULL DEFAULT '{}';
     ALTER TABLE signed ADD COLUMN options TEXT NOT NULL DEFAULT '{}';
     """,
+    # v7: pairing files (lockdown / RPPairing), encrypted, for StikDebug & co.
+    """
+    CREATE TABLE IF NOT EXISTS pairings (
+        id INTEGER PRIMARY KEY,
+        udid TEXT NOT NULL,
+        kind TEXT NOT NULL,                        -- lockdown | rp
+        name TEXT NOT NULL DEFAULT '',
+        ios TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        wifi_mac TEXT NOT NULL DEFAULT '',
+        ip TEXT NOT NULL DEFAULT '',
+        rp_port INTEGER NOT NULL DEFAULT 0,
+        host_name TEXT NOT NULL DEFAULT '',
+        data_enc TEXT NOT NULL,
+        targets TEXT NOT NULL DEFAULT '[]',        -- [{bundle_id, name, path}] last written into
+        wifi_debugging INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        verified_at TEXT,
+        last_error TEXT NOT NULL DEFAULT '',
+        UNIQUE (udid, kind)
+    );
+    """,
 ]
 
 

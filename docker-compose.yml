@@ -7,6 +7,9 @@ services:
     restart: unless-stopped
     ports:
       - "${PORT:-8080}:8080"
+    # Pairing-Dateien per WLAN (iPhone per mDNS finden): stattdessen Host-Netz verwenden
+    # und "ports:" weglassen (dann lauscht der Server direkt auf Port 8080 des Hosts):
+    # network_mode: host
     environment:
       BASE_URL: ${BASE_URL:-}            # z. B. https://apps.example.lan
       ADMIN_USER: ${ADMIN_USER:-}        # optional: Admin beim ersten Start anlegen

@@ -67,7 +67,7 @@ document.addEventListener("click", (e) => {
 // --------------------------------------------------------------- router --
 const routes = {
   apps: renderApps, app: renderApp, sources: renderSources, github: renderGithubRepos,
-  upload: renderUpload, feed: renderFeed, settings: renderSettings, log: renderLog, icon: renderIconDesigner, signing: renderSigning, downloads: renderDownloads,
+  upload: renderUpload, feed: renderFeed, settings: renderSettings, log: renderLog, icon: renderIconDesigner, signing: renderSigning, pairing: renderPairing, downloads: renderDownloads,
 };
 let timer = null;
 async function route() {
@@ -510,6 +510,149 @@ async function renderSigning() {
     $("[data-sdel]", tr).onclick = guard(async () => { await api("DELETE", `/signed/${x.id}`); renderSigning(); });
   });
 }
+
+// -------------------------------------------------------------- pairing --
+const pairKind = { lockdown: "Pairing-Datei", rp: "RPPairing" };
+
+async function pairingJob(jid, title) {
+  const form = modal(`<h2>${esc(title)}</h2><div id="pjlog" class="small mono" style="white-space:pre-wrap;min-height:60px"></div>
+    <div id="pjpin" hidden class="row" style="margin-top:10px"><input name="pin" inputmode="numeric" autocomplete="one-time-code" placeholder="PIN vom iPhone" style="width:160px"><button type="button" class="primary" id="pjsend">Senden</button></div>
+    <div class="row" style="margin-top:16px"><button value="cancel">Schließen</button></div>`);
+  $("#pjsend", form).onclick = guard(async () => { await api("POST", `/pairing/jobs/${jid}/pin`, { pin: form.pin.value }); form.pin.value = ""; });
+  for (;;) {
+    const j = await api("GET", `/pairing/jobs/${jid}`);
+    $("#pjlog", form).textContent = j.log.join("\n") + (j.status === "läuft" ? "\n…" : "");
+    $("#pjpin", form).hidden = !j.need_pin;
+    if (j.status !== "läuft") {
+      if (j.status === "fertig") { toast("Pairing-Datei erstellt"); $("#modal").close(); }
+      else $("#pjlog", form).textContent += `\n\nFehler: ${j.error}`;
+      return j;
+    }
+    if (!$("#modal").open) return j;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
+async function renderPairing() {
+  const st = await api("GET", "/pairing");
+  let devs = { available: false, devices: [] };
+  try { devs = await api("GET", "/devices"); } catch { /* */ }
+  const usb = devs.devices.filter((d) => d.connection === "usb");
+  view.innerHTML = `<div class="head"><div><h1>Pairing-Dateien</h1>
+      <div class="muted">Für StikDebug, SideStore, Feather &amp; Co.: iPhone per USB an den Server, Datei laden oder direkt in die App schreiben – später per WLAN prüfen und erneuern.</div></div></div>
+    ${!st.available ? '<div class="panel"><span class="badge err">ipas-pair fehlt</span> Das Docker-Image ab Version 0.7 enthält das Pairing-Werkzeug. Bitte Image aktualisieren.</div>' : ""}
+
+    <div class="panel"><div class="row spread"><h2>Per USB erzeugen</h2><button class="sm" id="prefresh">Aktualisieren</button></div>
+      ${usb.length ? `<table><tbody>${usb.map((d) => `<tr data-udid="${esc(d.udid)}"><td><b>${esc(d.name || "Unbekanntes Gerät")}</b><div class="muted small mono">${esc(d.udid)}</div></td>
+          <td class="small">${d.ios ? "iOS " + esc(d.ios) : ""} ${esc(d.model)}</td>
+          <td class="row" style="justify-content:flex-end">${d.paired
+            ? `<button class="sm primary" data-mk="lockdown">Pairing-Datei</button><button class="sm" data-mk="rp" title="Neues Format (iOS 17.4+), u. a. für StikDebug, Feather, SideStore">RPPairing</button>`
+            : '<button class="sm primary" data-pair>Koppeln</button>'}</td></tr>`).join("")}</tbody></table>
+        <label class="check small" style="margin-top:8px"><input type="checkbox" id="pwifi" checked> WLAN-Debugging einschalten (nötig, damit StikDebug &amp; Co. ohne Kabel arbeiten)</label>`
+        : `<div class="muted small">Kein iPhone per USB gefunden. Anschließen, entsperren, „Vertrauen“ antippen.${devs.usbmuxd ? "" : " (usbmuxd ist nicht eingebunden – siehe Signieren &amp; Installieren)"}</div>`}</div>
+
+    <div class="panel"><h2>Gespeicherte Pairing-Dateien</h2>
+      ${st.pairings.length ? `<table><tbody>${st.pairings.map((p) => `<tr data-pid="${p.id}">
+          <td><b>${esc(p.name || p.udid)}</b> <span class="badge ${p.kind === "rp" ? "upload" : "release"}">${pairKind[p.kind]}</span>
+            <div class="muted small">${p.ios ? "iOS " + esc(p.ios) + " · " : ""}${p.ip ? "WLAN " + esc(p.ip) + " · " : ""}geprüft ${fmtDate(p.verified_at)}${p.kind === "lockdown" ? (p.wifi_debugging ? " · WLAN-Debugging an" : "") : ""}</div>
+            ${p.targets.length ? `<div class="muted small">In: ${p.targets.map((t) => esc(t.name || t.bundle_id)).join(", ")}</div>` : ""}
+            ${p.last_error ? `<div class="small"><span class="badge err">Fehler</span> ${esc(p.last_error)}</div>` : ""}</td>
+          <td class="row" style="justify-content:flex-end;flex-wrap:wrap">
+            <a class="btn sm" href="/api/v1/pairing/${p.id}/file" download="${esc(p.filename)}">Laden</a>
+            <button class="sm primary" data-push>In App schreiben</button>
+            <button class="sm" data-verify>WLAN prüfen</button>
+            ${p.targets.length ? '<button class="sm" data-renew title="Per WLAN prüfen und erneut in alle Apps schreiben">WLAN erneuern</button>' : ""}
+            <button class="sm danger" data-pdel>Löschen</button></td></tr>`).join("")}</tbody></table>`
+        : '<div class="muted small">Noch keine. Oben ein per USB angeschlossenes iPhone wählen.</div>'}
+      <div class="muted small" style="margin-top:10px">Die Dateien liegen verschlüsselt auf deinem Server – sie werden für Prüfen/Erneuern per WLAN gebraucht. Wer eine Pairing-Datei hat, kann das iPhone fernsteuern: nicht weitergeben.</div></div>
+
+    <div class="panel stack"><h2>Koppeln über WLAN (iOS 27+)</h2>
+      <div class="muted small">Ganz ohne Kabel geht nur das neue RPPairing ab iOS 27: iPhone entsperren und im selben WLAN lassen, hier suchen und koppeln – das iPhone zeigt dann eine PIN, die du hier eingibst. Ältere iOS-Versionen: einmal per USB koppeln, danach geht Prüfen/Erneuern per WLAN.
+        Die Suche (mDNS) braucht <code>network_mode: host</code> für den Container – sonst IP und Port von Hand eintragen.</div>
+      <div class="row"><button class="sm" id="pdisc">Im Netzwerk suchen</button></div><div id="pdres"></div>
+      <form class="row" id="pwform"><input name="ip" placeholder="IP des iPhones" style="width:180px" required><input name="port" placeholder="Port" inputmode="numeric" style="width:90px" required><button class="primary sm">Koppeln</button></form></div>`;
+
+  $("#prefresh")?.addEventListener("click", guard(renderPairing));
+  $$("tr[data-udid]").forEach((tr) => {
+    const udid = tr.dataset.udid;
+    $("[data-pair]", tr)?.addEventListener("click", guard(async () => {
+      toast("Bitte auf dem iPhone „Vertrauen“ antippen …");
+      const r = await fetch(`/api/v1/devices/${encodeURIComponent(udid)}/pair`, { method: "POST", headers: { "X-Requested-With": "ipa-source" } });
+      const d = await r.json(); toast(d.message || d?.error?.message, !d.ok); renderPairing();
+    }));
+    $$("[data-mk]", tr).forEach((b) => b.addEventListener("click", guard(async () => {
+      const { job } = await api("POST", "/pairing/usb", { udid, kind: b.dataset.mk, wifi: $("#pwifi")?.checked ?? true });
+      const j = await pairingJob(job, b.dataset.mk === "rp" ? "RPPairing erzeugen" : "Pairing-Datei erzeugen");
+      if (j.status === "fertig") renderPairing();
+    })));
+  });
+  $$("tr[data-pid]").forEach((tr) => {
+    const p = st.pairings.find((x) => String(x.id) === tr.dataset.pid);
+    $("[data-pdel]", tr).onclick = guard(async () => { if (!confirm("Pairing-Datei löschen?")) return; await api("DELETE", `/pairing/${p.id}`); renderPairing(); });
+    $("[data-verify]", tr).onclick = guard(async () => {
+      toast("Suche iPhone im WLAN …");
+      try { const r = await api("POST", `/pairing/${p.id}/verify`, {}); toast(`OK – ${r.device?.DeviceName || ""} unter ${r.ip}`); }
+      finally { renderPairing(); }
+    });
+    $("[data-renew]", tr)?.addEventListener("click", guard(async () => {
+      toast("Erneuere per WLAN …");
+      try {
+        const r = await api("POST", `/pairing/${p.id}/renew`, {});
+        const bad = r.targets.filter((t) => !t.ok);
+        toast(bad.length ? `Fehler bei ${bad.map((t) => t.name || t.bundle_id).join(", ")}: ${bad[0].error}` : `Erneuert (${r.targets.length} App${r.targets.length === 1 ? "" : "s"})`, !!bad.length);
+      } finally { renderPairing(); }
+    }));
+    $("[data-push]", tr).onclick = guard(() => pairingPushDialog(p));
+  });
+  $("#pdisc").onclick = guard(async () => {
+    $("#pdres").innerHTML = '<div class="muted small">Suche …</div>';
+    const { services } = await api("GET", "/pairing/discover?timeout=5");
+    const rp = services.filter((s) => s.type === "remotepairing");
+    const other = services.filter((s) => s.type !== "remotepairing");
+    $("#pdres").innerHTML = rp.length ? `<table><tbody>${rp.map((s, i) => `<tr><td><b>${esc(s.txt?.name || s.host)}</b><div class="muted small mono">${esc((s.ipv4[0] || s.addresses[0] || "") + ":" + s.port)}</div></td><td style="text-align:right"><button class="sm primary" data-wp="${i}">Koppeln</button></td></tr>`).join("")}</tbody></table>`
+      : `<div class="muted small">Kein koppelbares Gerät gefunden${other.length ? ` (${other.length} bereits gekoppelte iPhones im Netz sichtbar)` : services.length ? "" : " – ohne network_mode: host sieht der Container kein mDNS"}.</div>`;
+    $$("[data-wp]", $("#pdres")).forEach((b) => b.addEventListener("click", guard(async () => {
+      const s = rp[+b.dataset.wp];
+      await wifiPair(s.ipv4[0] || s.addresses[0], s.port);
+    })));
+  });
+  $("#pwform").onsubmit = guard(async (e) => { e.preventDefault(); const f = new FormData(e.target); await wifiPair(f.get("ip"), +f.get("port")); });
+}
+
+async function wifiPair(ip, port) {
+  const { job } = await api("POST", "/pairing/wifi", { ip, port });
+  const j = await pairingJob(job, "Über WLAN koppeln");
+  if (j.status === "fertig") renderPairing();
+}
+
+async function pairingPushDialog(p) {
+  const form = modal(`<h2>In App schreiben</h2>
+    <div class="row"><label class="check"><input type="radio" name="via" value="usb" checked> per USB</label><label class="check"><input type="radio" name="via" value="wifi"> per WLAN</label>
+      <label class="check small"><input type="checkbox" name="all"> alle Apps zeigen</label><button type="button" class="sm" id="pload">Apps laden</button></div>
+    <div id="papps" class="stack" style="margin-top:10px"><div class="muted small">Apps vom iPhone laden …</div></div>
+    <div class="row" style="margin-top:16px"><button value="cancel">Schließen</button></div>`);
+  const load = guard(async () => {
+    const via = form.via.value;
+    $("#papps", form).innerHTML = '<div class="muted small">Lade Apps …</div>';
+    let list;
+    try { list = (await api("GET", `/pairing/${p.id}/apps?via=${via}${form.all.checked ? "&all=1" : ""}`)).apps; }
+    catch (e) { $("#papps", form).innerHTML = `<div class="small"><span class="badge err">Fehler</span> ${esc(e.message)}</div>`; return; }
+    $("#papps", form).innerHTML = list.length ? `<table><tbody>${list.map((a, i) => `<tr><td><b>${esc(a.name || a.bundle_name)}</b> ${esc(a.version)}<div class="muted small mono">${esc(a.bundle_id)}</div></td>
+        <td><input data-path="${i}" value="${esc(a.path || "pairingFile.plist")}" class="mono small" style="width:220px"></td>
+        <td style="text-align:right"><button type="button" class="sm primary" data-w="${i}">Schreiben</button></td></tr>`).join("")}</tbody></table>`
+      : `<div class="muted small">Keine passende App gefunden (${p.kind === "rp" ? "RPPairing" : "Lockdown"}: ${esc(st_apps(p.kind))}). „alle Apps zeigen“ für eigene Ziele.</div>`;
+    $$("[data-w]", form).forEach((b) => b.addEventListener("click", guard(async () => {
+      const a = list[+b.dataset.w];
+      await api("POST", `/pairing/${p.id}/push`, { bundle_id: a.bundle_id, path: $(`[data-path="${b.dataset.w}"]`, form).value, via: form.via.value, name: a.name || a.bundle_name });
+      toast(`In ${a.name || a.bundle_name} geschrieben – App neu starten`); b.textContent = "✓";
+    })));
+  });
+  $("#pload", form).onclick = load;
+  form.all.onchange = load;
+  $$('input[name="via"]', form).forEach((r) => (r.onchange = load));
+  load();
+}
+const st_apps = (kind) => (kind === "rp" ? "StikDebug, Feather, SideStore, LiveContainer, …" : "StikDebug, SideStore, Feather, LiveContainer, …");
 
 // -------------------------------------------------------------- downloads --
 const dlStatus = { wartet: "wartet", läuft: "lädt", auswahl: "Auswahl nötig", fertig: "fertig", fehler: "Fehler", abgebrochen: "abgebrochen" };
