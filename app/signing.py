@@ -397,14 +397,18 @@ def start_usb_install(signed_id: int, udid: str) -> str:
 
 def _usb_install(jid, inst, path, udid):
     job = _jobs[jid]
+    cmd = [inst, "-u", udid, "-i", str(path)]
+    job["log"] = f"$ ideviceinstaller -u {udid} -i {path.name}\n"
     try:
-        p = subprocess.Popen([inst, "-u", udid, "-i", str(path)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             text=True, bufsize=1)
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, encoding="utf-8", errors="replace", bufsize=1)
+        last = ""
         for line in p.stdout:
             line = ANSI.sub("", line).strip()
             if not line:
                 continue
-            job["log"] = (job["log"] + line + "\n")[-6000:]
+            last = line
+            job["log"] = (job["log"] + line + "\n")[-12000:]
             m = re.search(r"\((\d+)%\)", line)
             if m:
                 job["progress"] = int(m.group(1))
@@ -412,15 +416,29 @@ def _usb_install(jid, inst, path, udid):
                 job["message"] = line
             elif "Uploading" in line or "Copying" in line:
                 job["message"] = "Übertrage IPA aufs iPhone …"
-            if "ERROR" in line.upper():
+            if "ERROR" in line.upper() or line.lower().startswith(("could not", "no device", "unable")):
                 job["message"] = line
         rc = p.wait()
-        ok = rc == 0 and ("Complete" in job["log"] or "ERROR" not in job["log"].upper())
-        job.update(status="fertig" if ok else "fehler", progress=100 if ok else job["progress"],
-                   message="Installiert" if ok else (job["message"] or f"Fehler (Code {rc})"))
+        ok = rc == 0 and "Complete" in job["log"]
+        if ok:
+            job.update(status="fertig", progress=100, message="Installiert")
+        else:
+            if rc < 0:
+                import signal
+                try:
+                    why = f"ideviceinstaller wurde beendet ({signal.Signals(-rc).name})"
+                except ValueError:
+                    why = f"ideviceinstaller wurde beendet (Signal {-rc})"
+            elif job["message"].startswith(("Übertrage", "Install:", "Installing")) or not job["message"]:
+                why = f"{last or 'keine Ausgabe'} (Exit-Code {rc})"
+            else:
+                why = f"{job['message']} (Exit-Code {rc})"
+            job.update(status="fehler", message=why)
+        job["log"] += f"[Exit-Code {rc}]\n"
         db.log_event("info" if ok else "error", f"USB-Installation auf {udid}: {job['message']}")
     except Exception as e:
-        job.update(status="fehler", message=str(e))
+        job.update(status="fehler", message=f"{type(e).__name__}: {e}")
+        job["log"] += f"{type(e).__name__}: {e}\n"
     job["finished_at"] = db.now()
 
 

@@ -433,7 +433,9 @@ function bindSignedActions(el, s) {
       await sleep(1500);
       j = await api("GET", `/jobs/${j.id}`);
     }
-    st.innerHTML = j.status === "fertig" ? '<div>✓ Installiert</div>' : `<div><span class="badge err">Fehler</span> ${esc(j.message)}</div>`;
+    st.innerHTML = j.status === "fertig" ? '<div>✓ Installiert</div>'
+      : `<div><span class="badge err">Fehler</span> ${esc(j.message)}</div>
+         <details><summary class="small">Log anzeigen</summary><pre class="mono small" style="max-height:40vh;overflow:auto;white-space:pre-wrap">${esc(j.log || "(leer)")}</pre></details>`;
     btn.disabled = false;
   });
 }
