@@ -395,10 +395,27 @@ def start_usb_install(signed_id: int, udid: str) -> str:
     return jid
 
 
+_installer_syntax: dict = {}
+
+
+def _install_cmd(inst: str, udid: str, path) -> list:
+    """ideviceinstaller >= 1.2 (and newer git snapshots) uses 'install PATH', older ones '-i PATH'."""
+    if inst not in _installer_syntax:
+        try:
+            r = subprocess.run([inst, "-h"], capture_output=True, text=True, errors="replace", timeout=10)
+            help_text = (r.stdout or "") + (r.stderr or "")
+        except Exception:
+            help_text = ""
+        _installer_syntax[inst] = "sub" if re.search(r"^\s*install\s+PATH", help_text, re.M) else "legacy"
+    if _installer_syntax[inst] == "sub":
+        return [inst, "-u", udid, "install", str(path)]
+    return [inst, "-u", udid, "-i", str(path)]
+
+
 def _usb_install(jid, inst, path, udid):
     job = _jobs[jid]
-    cmd = [inst, "-u", udid, "-i", str(path)]
-    job["log"] = f"$ ideviceinstaller -u {udid} -i {path.name}\n"
+    cmd = _install_cmd(inst, udid, path)
+    job["log"] = "$ ideviceinstaller " + " ".join(cmd[1:-1]) + f" {path.name}\n"
     try:
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, encoding="utf-8", errors="replace", bufsize=1)
@@ -419,7 +436,7 @@ def _usb_install(jid, inst, path, udid):
             if "ERROR" in line.upper() or line.lower().startswith(("could not", "no device", "unable")):
                 job["message"] = line
         rc = p.wait()
-        ok = rc == 0 and "Complete" in job["log"]
+        ok = rc == 0 and "ERROR" not in job["log"].upper()
         if ok:
             job.update(status="fertig", progress=100, message="Installiert")
         else:
