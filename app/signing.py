@@ -3,6 +3,7 @@ Server-side signing with zsign and installing:
   - OTA: iOS installs straight from this server via an itms-services manifest (HTTPS required)
   - USB: ideviceinstaller (libimobiledevice) to an iPhone attached to the server
 """
+import json
 import os
 import plistlib
 import queue
@@ -36,6 +37,34 @@ def zsign_path():
     return shutil.which(config.ZSIGN_BIN) or (config.ZSIGN_BIN if os.access(config.ZSIGN_BIN, os.X_OK) else None)
 
 
+# Fixes that can be injected while signing: option key -> dylib file in FIXES_DIR
+FIXES = {
+    "filepicker": {"file": "FilePickerFix.dylib", "label": "File Picker Fix",
+                   "description": "Datei-Auswahl liefert eine Kopie statt Zugriff aufs Original – behebt "
+                                  "„keine Berechtigung“ beim Importieren in Sideload-Apps"},
+}
+
+
+def available_fixes():
+    out = []
+    for key, f in FIXES.items():
+        path = config.FIXES_DIR / f["file"]
+        out.append({"key": key, "label": f["label"], "description": f["description"], "available": path.exists()})
+    return out
+
+
+def normalize_options(opts) -> dict:
+    """Only known, available fixes; stable shape for caching/comparison."""
+    opts = opts or {}
+    out = {}
+    for key, f in FIXES.items():
+        if opts.get(key):
+            if not (config.FIXES_DIR / f["file"]).exists():
+                raise ValueError(f"{f['label']} ist in diesem Image nicht enthalten")
+            out[key] = True
+    return out
+
+
 def capabilities():
     return {
         "zsign": bool(zsign_path()),
@@ -44,6 +73,7 @@ def capabilities():
         # Device Service on Windows: USBMUXD_SOCKET_ADDRESS=192.168.1.10:27015
         "usbmuxd": os.path.exists("/var/run/usbmuxd") or bool(os.environ.get("USBMUXD_SOCKET_ADDRESS")),
         "usbmuxd_remote": os.environ.get("USBMUXD_SOCKET_ADDRESS", ""),
+        "fixes": available_fixes(),
     }
 
 
@@ -70,17 +100,24 @@ def desired_bundle_id(app_bundle: str, cert, override: str = "") -> str:
     return app_bundle
 
 
-def request_sign(build_id: int, cert_id: int, force=False, bundle_id: str = "") -> dict:
+def request_sign(build_id: int, cert_id: int, force=False, bundle_id: str = "", options=None,
+                 remember: bool = True) -> dict:
     b = db.one("SELECT * FROM builds WHERE id = ?", build_id)
     c = certs.get(cert_id)
     if not b or not c:
         raise ValueError("Build oder Zertifikat nicht gefunden")
     if not zsign_path():
         raise ValueError("zsign ist auf dem Server nicht installiert")
-    a = db.one("SELECT bundle_id FROM apps WHERE id = ?", b["app_id"])
+    a = db.one("SELECT id, bundle_id, sign_options FROM apps WHERE id = ?", b["app_id"])
     want = desired_bundle_id(a["bundle_id"], c, (bundle_id or "").strip())
-    existing = db.one("SELECT * FROM signed WHERE build_id = ? AND cert_id = ? AND bundle_id = ? "
-                      "ORDER BY id DESC LIMIT 1", build_id, cert_id, want)
+    if options is None:                       # not specified -> what was used last time for this app
+        options = jloads(a["sign_options"], {})
+    opts = normalize_options(options)
+    opts_json = json.dumps(opts, sort_keys=True)
+    if remember:
+        db.execute("UPDATE apps SET sign_options = ? WHERE id = ?", opts_json, a["id"])
+    existing = db.one("SELECT * FROM signed WHERE build_id = ? AND cert_id = ? AND bundle_id = ? AND options = ? "
+                      "ORDER BY id DESC LIMIT 1", build_id, cert_id, want, opts_json)
     if existing and not force:
         if existing["status"] in ("wartet", "läuft"):
             return existing
@@ -88,8 +125,9 @@ def request_sign(build_id: int, cert_id: int, force=False, bundle_id: str = "") 
                 and (config.SIGNED_DIR / existing["path"]).exists()):
             return existing
     sid = db.execute(
-        "INSERT INTO signed(build_id, cert_id, bundle_id, build_sha256, token, created_at) VALUES(?,?,?,?,?,?)",
-        build_id, cert_id, want, b["sha256"], secrets.token_urlsafe(24), db.now(),
+        "INSERT INTO signed(build_id, cert_id, bundle_id, options, build_sha256, token, created_at) "
+        "VALUES(?,?,?,?,?,?,?)",
+        build_id, cert_id, want, opts_json, b["sha256"], secrets.token_urlsafe(24), db.now(),
     )
     _start_worker()
     _q.put(sid)
@@ -158,8 +196,15 @@ def _sign(sid: int):
                "-m", str(cdir / "profile.mobileprovision")]
         if new_bid:
             cmd += ["-b", new_bid]
+        for key in jloads(s["options"], {}):
+            if key in FIXES:
+                lib = config.FIXES_DIR / FIXES[key]["file"]
+                if not lib.exists():
+                    raise ValueError(f"{FIXES[key]['label']}: {lib.name} fehlt im Image")
+                cmd += ["-l", str(lib)]
+                lines.append(f">>> Injiziere {FIXES[key]['label']} ({lib.name})")
         cmd.append(str(apps[0]))             # sign the folder in place, no zsign archiving
-        r = subprocess.run(cmd, capture_output=True, timeout=4 * 3600)
+        r = subprocess.run(cmd, capture_output=True, timeout=4 * 3600, cwd=str(work))
         rc = r.returncode
         raw = (r.stdout or b"").decode("utf-8", "replace") + (r.stderr or b"").decode("utf-8", "replace")
         if rc != 0:
@@ -241,6 +286,7 @@ def public(s, base: str) -> dict:
     c = certs.get(s["cert_id"])
     out = {k: s[k] for k in ("id", "build_id", "cert_id", "bundle_id", "size", "status", "error",
                              "created_at", "finished_at")}
+    out["options"] = jloads(s["options"], {})
     out.update({
         "app_id": a["id"] if a else None,
         "app_name": a["name"] if a else "",

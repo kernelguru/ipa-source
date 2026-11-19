@@ -105,8 +105,11 @@ def main():
             o.writestr(i, macho.read_bytes() if i.filename == "Payload/T.app/T" else z.read(i))
 
     fake = ROOT / "tests" / "fake_idevice"
+    fixes = tmp / "fixes"
+    fixes.mkdir()
+    shutil.copy(macho, fixes / "FilePickerFix.dylib")     # stand-in Mach-O dylib for the injection test
     env = {**os.environ, "DATA_DIR": str(tmp / "data"), "BASE_URL": "https://apps.example.test", "NO_PROXY": "127.0.0.1",
-           "ZSIGN_BIN": ZSIGN, "IDEVICE_BIN_DIR": str(fake), "IDEVICEINSTALLER_BIN": str(fake / "ideviceinstaller"),
+           "ZSIGN_BIN": ZSIGN, "IDEVICE_BIN_DIR": str(fake), "FIXES_DIR": str(fixes), "IDEVICEINSTALLER_BIN": str(fake / "ideviceinstaller"),
            "ADMIN_USER": "admin", "ADMIN_PASSWORD": "password123", "GITHUB_TOKEN": ""}
     srv = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(PORT)], cwd=ROOT, env=env,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -134,6 +137,7 @@ def main():
 
         st, d = call("PUT", "/api/v1/uploads?filename=app.ipa", raw=(tmp / "app.ipa").read_bytes())
         build_id = d["build"]["id"]
+        d0 = d
         st, s = call("POST", f"/api/v1/builds/{build_id}/sign", {})
         check(st == 202, "sign job queued")
         for _ in range(60):
@@ -181,6 +185,32 @@ def main():
         st, bad = call("POST", f"/api/v1/builds/{build_id}/sign", {"bundle_id": "nope nope"})
         check(st == 400, "invalid bundle ID rejected")
 
+        # File Picker Fix: injected dylib + load command, option remembered per app
+        st, certs_info = call("GET", "/api/v1/certs")
+        check(any(f["key"] == "filepicker" and f["available"] for f in certs_info["capabilities"]["fixes"]),
+              "file picker fix reported as available")
+        st, s3 = call("POST", f"/api/v1/builds/{build_id}/sign", {"options": {"filepicker": True}})
+        for _ in range(60):
+            st, s3 = call("GET", f"/api/v1/signed/{s3['id']}")
+            if s3["status"] in ("fertig", "fehler"):
+                break
+            time.sleep(0.25)
+        check(s3["status"] == "fertig" and s3["options"] == {"filepicker": True}, f"signed with fix ({s3.get('error')})")
+        st, ipa3 = call("GET", "/install/" + s3["install_page"].rsplit("/", 1)[1] + "/app.ipa")
+        (tmp / "s3.ipa").write_bytes(ipa3)
+        with zipfile.ZipFile(tmp / "s3.ipa") as z:
+            has_lib = "Payload/T.app/FilePickerFix.dylib" in z.namelist()
+            binary = z.read("Payload/T.app/T")
+            lib_mode = z.getinfo("Payload/T.app/FilePickerFix.dylib").external_attr >> 16 if has_lib else 0
+        check(has_lib and b"@executable_path/FilePickerFix.dylib" in binary and lib_mode & 0o111,
+              "dylib copied into the app and linked via LC_LOAD_DYLIB")
+        st, appinfo = call("GET", f"/api/v1/apps/{d0['app']['id']}")
+        check(appinfo["sign_options"] == {"filepicker": True}, "fix remembered for this app")
+        st, again3 = call("POST", f"/api/v1/builds/{build_id}/sign", {})
+        check(again3["id"] == s3["id"], "re-sign without options reuses remembered fix (cached copy)")
+        st, _ = call("POST", f"/api/v1/builds/{build_id}/sign", {"options": "yes"})
+        check(st == 400, "invalid options rejected")
+
         make(tmp / "broken.ipa", "de.test.broken", "1.0", "1", "Broken")   # fake 4-byte "binary"
         st, d = call("PUT", "/api/v1/uploads?filename=broken.ipa", raw=(tmp / "broken.ipa").read_bytes())
         st, bad = call("POST", f"/api/v1/builds/{d['build']['id']}/sign", {})
@@ -194,14 +224,16 @@ def main():
 
         st, devs = call("GET", "/api/v1/devices")
         check(devs["available"] and devs["devices"][0]["paired"], "device list")
-        st, j = call("POST", f"/api/v1/signed/{s['id']}/install-usb", {"udid": udid})
+        st, lst = call("GET", "/api/v1/signed")
+        check(s["id"] not in [x["id"] for x in lst["signed"]], "older copy of the same installed app replaced")
+        st, j = call("POST", f"/api/v1/signed/{s3['id']}/install-usb", {"udid": udid})
         for _ in range(40):
             st, j = call("GET", f"/api/v1/jobs/{j['id']}")
             if j["status"] != "läuft":
                 break
             time.sleep(0.25)
         check(j["status"] == "fertig" and j["progress"] == 100, "USB install job")
-        st, d = call("POST", f"/api/v1/signed/{s['id']}/install-usb", {"udid": "not-in-profile"})
+        st, d = call("POST", f"/api/v1/signed/{s3['id']}/install-usb", {"udid": "not-in-profile"})
         check(st == 400, "device not in profile rejected")
 
         st, _ = call("DELETE", f"/api/v1/certs/{cert['id']}")

@@ -171,6 +171,12 @@ liegt in `/data/lockdown`.
 
 Ohne USB funktioniert immer die Installation per Link (OTA).
 
+**File Picker Fix (optional):** Im Signier-Dialog anhakbar und pro App gemerkt. Er schleust
+`FilePickerFix.dylib` in die App ein, die den Datei-Dialog auf „Kopie importieren“ umstellt. Damit verschwinden
+„keine Berechtigung“-Fehler beim Import in Sideload-Apps (z. B. Emulatoren). Ordner-Auswahl bleibt unverändert,
+importierte Dateien werden kopiert, kurzzeitig also doppelt gespeichert. Quelle: `fixes/filepicker/FilePickerFix.m`,
+gebaut vom Workflow `fixes.yml` auf einem macOS-Runner (nur bei Änderungen, das Ergebnis liegt in `fixes/bin/`).
+
 Pro App und Zertifikat wird nur die neueste signierte Kopie aufbewahrt (`/data/signed`).
 
 **Speicherbedarf beim Signieren:** Der Server entpackt die IPA selbst, zsign signiert den Ordner, danach wird

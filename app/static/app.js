@@ -369,6 +369,10 @@ async function signFlow(build, app) {
   const form = modal(`<h2>${esc(app.name)} ${esc(build.version)} (${esc(build.build_version)})</h2>
     <p class="muted small">Der Server signiert die IPA mit deinem Zertifikat. Danach installierst du sie direkt per Link auf dem iPhone oder per USB-Kabel am Server.</p>
     ${list.length > 1 ? `<div><label>Zertifikat</label><select name="cert">${list.map((c) => `<option value="${c.id}" ${c.is_default ? "selected" : ""}>${esc(c.name)} – ${typeLabel[c.profile_type] || c.profile_type}${c.expired ? " (abgelaufen)" : ""}</option>`).join("")}</select></div>` : `<div class="muted small">Zertifikat: <b>${esc(list[0].name)}</b></div>`}
+    ${(caps.fixes || []).map((f) => `<label class="check" style="margin-top:12px" title="${esc(f.description)}">
+      <input type="checkbox" name="fix_${f.key}" ${f.available ? "" : "disabled"} ${f.available && (app.sign_options || {})[f.key] ? "checked" : ""}>
+      ${esc(f.label)}${f.available ? "" : ' <span class="muted small">(im Image noch nicht enthalten)</span>'}</label>
+      <div class="muted small" style="margin-left:26px">${esc(f.description)}</div>`).join("")}
     <details style="margin-top:10px"><summary class="small">Erweitert</summary>
       <div style="margin-top:8px"><label>Bundle-ID (leer = unverändert ${esc(app.bundle_id)})</label>
       <input name="bundle_id" placeholder="z. B. ${esc(app.bundle_id)}.zweit" autocomplete="off" autocapitalize="off">
@@ -396,7 +400,9 @@ async function signFlow(build, app) {
     $("#dosign", form).disabled = true;
     const cert = form.querySelector("[name=cert]")?.value;
     const bid = form.querySelector("[name=bundle_id]")?.value.trim();
-    const s = await api("POST", `/builds/${build.id}/sign`, { ...(cert ? { cert_id: +cert } : {}), ...(bid ? { bundle_id: bid } : {}) });
+    const options = Object.fromEntries((caps.fixes || []).map((f) => [f.key, !!form.querySelector(`[name=fix_${f.key}]`)?.checked]));
+    const s = await api("POST", `/builds/${build.id}/sign`, { ...(cert ? { cert_id: +cert } : {}), ...(bid ? { bundle_id: bid } : {}), options });
+    app.sign_options = options;
     poll(s.id);
   });
 }
@@ -405,7 +411,7 @@ async function signedActions(s) {
   let devs = { devices: [] };
   try { devs = await api("GET", "/devices"); } catch { /* */ }
   const usable = devs.devices.filter((d) => d.paired);
-  return `<div><span class="badge release">signiert</span> <span class="muted small">${fmtSize(s.size)} · ${esc(s.cert_name)}${s.outdated ? ' · <b>veraltet</b> (Build wurde geändert)' : ""}</span></div>
+  return `<div><span class="badge release">signiert</span>${(s.options || {}).filepicker ? ' <span class="badge upload">File Picker Fix</span>' : ""} <span class="muted small">${fmtSize(s.size)} · ${esc(s.cert_name)}${s.outdated ? ' · <b>veraltet</b> (Build wurde geändert)' : ""}</span></div>
     ${s.ota_ready ? (isIOS
       ? `<a class="btn primary" href="${esc(s.itms_url)}" style="justify-content:center">Auf diesem Gerät installieren</a>`
       : `<div><label>Installationslink fürs iPhone (in Safari öffnen)</label>${copyBox(s.install_page)}</div>`)
@@ -461,7 +467,7 @@ async function renderSigning() {
 
     <div class="panel"><h2>Signierte IPAs</h2>
       ${signed.length ? `<table><thead><tr><th>App</th><th>Zertifikat</th><th>Status</th><th></th></tr></thead><tbody>${signed.map((x) => `<tr data-sid="${x.id}">
-        <td><a href="#/app/${x.app_id}"><b>${esc(x.app_name)}</b></a> ${esc(x.version)} (${esc(x.build_version)})<div class="muted small mono">${esc(x.bundle_id)}</div><div class="muted small">${fmtDate(x.finished_at || x.created_at)}${x.size ? " · " + fmtSize(x.size) : ""}</div></td>
+        <td><a href="#/app/${x.app_id}"><b>${esc(x.app_name)}</b></a> ${esc(x.version)} (${esc(x.build_version)})<div class="muted small mono">${esc(x.bundle_id)}${(x.options || {}).filepicker ? ' <span class="badge upload">File Picker Fix</span>' : ""}</div><div class="muted small">${fmtDate(x.finished_at || x.created_at)}${x.size ? " · " + fmtSize(x.size) : ""}</div></td>
         <td class="small">${esc(x.cert_name)}</td>
         <td>${x.status === "fertig" ? `<span class="badge release">bereit</span>${x.outdated ? ' <span class="badge">veraltet</span>' : ""}` : x.status === "fehler" ? `<span class="badge err" title="${esc(x.error)}">Fehler</span>` : `<span class="badge">${esc(x.status)}</span>`}</td>
         <td class="row" style="justify-content:flex-end">${x.status === "fertig" ? '<button class="sm primary" data-inst>Installieren</button>' : ""}${x.status === "fehler" ? '<button class="sm" data-log>Log</button>' : ""}<button class="sm danger" data-sdel>Löschen</button></td></tr>`).join("")}</tbody></table>`

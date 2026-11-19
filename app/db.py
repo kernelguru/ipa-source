@@ -171,6 +171,11 @@ SCHEMA = [
     """
     ALTER TABLE certs ADD COLUMN adapt_bundle_id INTEGER NOT NULL DEFAULT 0;
     """,
+    # v6: signing options (injected fixes), remembered per app
+    """
+    ALTER TABLE apps ADD COLUMN sign_options TEXT NOT NULL DEFAULT '{}';
+    ALTER TABLE signed ADD COLUMN options TEXT NOT NULL DEFAULT '{}';
+    """,
 ]
 
 

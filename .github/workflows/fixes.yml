@@ -1,0 +1,37 @@
+name: Build fix dylibs
+
+# iOS libraries that ipa-source injects while signing. They need the iOS SDK (macOS runner),
+# so they are only rebuilt when their source changes and committed to fixes/bin/.
+# The Docker build then simply copies the committed files.
+on:
+  push:
+    branches: [main]
+    paths: ["fixes/**", "!fixes/bin/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: ./fixes/build.sh
+      - name: Commit binaries
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add fixes/bin/*.dylib
+          if git diff --cached --quiet; then echo "unchanged"; exit 0; fi
+          git commit -m "Build fix dylibs (${GITHUB_SHA::7})"
+          git push
+          echo "changed=1" >> "$GITHUB_OUTPUT"
+        id: commit
+      - name: Rebuild Docker image with the new binaries
+        if: steps.commit.outputs.changed == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run docker.yml --ref main

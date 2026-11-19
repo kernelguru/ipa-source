@@ -307,7 +307,11 @@ paths:
     post:
       summary: Sign a build with zsign (background); reuses an up-to-date signed copy
       parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
-      requestBody: {content: {application/json: {schema: {type: object, properties: {cert_id: {type: integer}, force: {type: boolean}}}}}}
+      requestBody: {content: {application/json: {schema: {type: object, properties: {
+        cert_id: {type: integer}, force: {type: boolean}, bundle_id: {type: string},
+        options: {type: object, description: "Injected fixes, e.g. {filepicker: true}; omitted = app's remembered options",
+                  properties: {filepicker: {type: boolean}}},
+        remember: {type: boolean, default: true}}}}}}
       responses: {"202": {description: "Signed record; poll GET /signed/{id} until status fertig | fehler"}}
   /signed:
     get:

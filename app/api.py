@@ -254,6 +254,7 @@ def _app_json(a, request, with_builds=False):
         "icon_status": ("custom" if a["icon_custom"] else "external" if a["icon_url"] else
                         "blank" if a["has_icon"] and a["icon_blank"] else "ipa" if a["has_icon"] else "missing"),
         "icon_custom": bool(a["icon_custom"]),
+        "sign_options": jloads(a["sign_options"], {}),
         "auto_inject": bool(a["auto_inject"]),
         "build_count": len(builds),
         "latest": _build_json(builds[0], request) if builds else None,
@@ -775,7 +776,8 @@ async def cert_detail(request):
 
 @endpoint("full")
 async def build_sign(request):
-    """POST {cert_id?, force?, bundle_id?} -> signed job (poll GET /signed/{id}).
+    """POST {cert_id?, force?, bundle_id?, options?: {filepicker: bool}, remember?} -> signed job.
+    options omitted -> the app's remembered options are used.
     The app keeps its bundle ID (like Feather) unless bundle_id is given or the
     certificate is set to adapt it to the profile's App ID."""
     bid = int(request.path_params["id"])
@@ -784,8 +786,11 @@ async def build_sign(request):
     cid = data.get("cert_id") or (certs.default() or {}).get("id")
     if not cid:
         raise ApiError(400, "no_cert", "Kein Signier-Zertifikat hinterlegt")
+    opts = data.get("options")
+    if opts is not None and not isinstance(opts, dict):
+        raise ApiError(400, "invalid", "options muss ein Objekt sein, z. B. {\"filepicker\": true}")
     s = await run_in_threadpool(signing.request_sign, bid, int(cid), bool(data.get("force")),
-                                str(data.get("bundle_id") or ""))
+                                str(data.get("bundle_id") or ""), opts, data.get("remember", True) is not False)
     return JSONResponse(signing.public(s, feed.base_url(request)), status_code=202)
 
 
