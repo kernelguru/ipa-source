@@ -8,7 +8,8 @@ services:
     ports:
       - "${PORT:-8080}:8080"
     # Pairing-Dateien per WLAN (iPhone per mDNS finden): stattdessen Host-Netz verwenden
-    # und "ports:" weglassen (dann lauscht der Server direkt auf Port 8080 des Hosts):
+    # und "ports:" weglassen. Der Server lauscht dann direkt auf LISTEN_PORT des Hosts
+    # (Standard 8080 – ist der belegt, z. B. LISTEN_PORT=8081 setzen):
     # network_mode: host
     environment:
       BASE_URL: ${BASE_URL:-}            # z. B. https://apps.example.lan
@@ -19,6 +20,7 @@ services:
       UPLOAD_CHUNK_MB: ${UPLOAD_CHUNK_MB:-32} # Teilgröße beim Upload über die Weboberfläche
       # USB über Windows (Docker in Hyper-V-VM): Apple Mobile Device Service per TCP, siehe README
       USBMUXD_SOCKET_ADDRESS: ${USBMUXD_SOCKET_ADDRESS:-}
+      LISTEN_PORT: ${LISTEN_PORT:-8080}  # Port im Container (bei network_mode: host = Port auf dem Host)
     volumes:
       - ./data:/data
       # USB-Installation (optional): usbmuxd auf dem Host installieren

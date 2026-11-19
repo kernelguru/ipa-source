@@ -202,7 +202,8 @@ eingebunden sein), einmal koppeln, dann:
   Die klassische Kopplung braucht beim ersten Mal immer USB.
 
 Das iPhone wird im WLAN per mDNS gefunden. Dafür muss der Container im Host-Netz laufen
-(`network_mode: host`, dann entfällt `ports:`), sonst die IP von Hand eintragen. Der Server merkt sich die
+(`network_mode: host`, dann entfällt `ports:`; ist Port 8080 auf dem Host belegt, `LISTEN_PORT` setzen
+und im Reverse-Proxy das Ziel anpassen), sonst die IP von Hand eintragen. Der Server merkt sich die
 zuletzt gefundene IP.
 
 Die Dateien liegen verschlüsselt in der Datenbank (Schlüssel `/data/secret.key`) und lassen sich jederzeit
