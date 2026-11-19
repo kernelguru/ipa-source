@@ -369,7 +369,11 @@ async fn cmd_wifiaccept(a: &Args) -> Res<Value> {
     let props: Vec<(&str, &str)> = txt.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
 
     let daemon = ServiceDaemon::new().map_err(|e| format!("mDNS: {e}"))?;
-    let _ = daemon.set_service_name_len_max(63);
+    // "remotepairing-pairable-host" is longer than the RFC 6763 default of 15;
+    // mdns-sd caps the limit at 30.
+    daemon
+        .set_service_name_len_max(30)
+        .map_err(|e| format!("mDNS-Namenslänge: {e}"))?;
     let short: String = ident.chars().filter(|c| c.is_ascii_alphanumeric()).take(8).collect();
     let svc = ServiceInfo::new(
         PAIRABLE_HOST_SERVICE_TYPE,
