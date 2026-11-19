@@ -870,17 +870,13 @@ async def pairing_usb(request):
 
 @endpoint("full")
 async def pairing_job(request):
+    if request.method == "DELETE":
+        await _pcall(pairing.cancel, request.path_params["jid"])
+        return JSONResponse({"ok": True})
     j = pairing.job(request.path_params["jid"])
     if not j:
         raise ApiError(404, "not_found", "Auftrag unbekannt (Server neu gestartet?)")
     return JSONResponse(j)
-
-
-@endpoint("full")
-async def pairing_job_pin(request):
-    b = await body(request)
-    pairing.submit_pin(request.path_params["jid"], str(b.get("pin") or ""))
-    return JSONResponse({"ok": True})
 
 
 @endpoint("full")
@@ -891,9 +887,7 @@ async def pairing_discover(request):
 
 @endpoint("full")
 async def pairing_wifi(request):
-    b = await body(request)
-    jid = await _pcall(pairing.start_wifipair, str(b.get("ip") or ""), int(b.get("port") or 0),
-                       str(b.get("udid") or ""))
+    jid = await _pcall(pairing.start_wifiaccept)
     return JSONResponse({"job": jid}, status_code=202)
 
 
@@ -1108,8 +1102,7 @@ def routes():
         Route(p + "/pairing/usb", pairing_usb, methods=["POST"]),
         Route(p + "/pairing/wifi", pairing_wifi, methods=["POST"]),
         Route(p + "/pairing/discover", pairing_discover, methods=["GET"]),
-        Route(p + "/pairing/jobs/{jid}", pairing_job, methods=["GET"]),
-        Route(p + "/pairing/jobs/{jid}/pin", pairing_job_pin, methods=["POST"]),
+        Route(p + "/pairing/jobs/{jid}", pairing_job, methods=["GET", "DELETE"]),
         Route(p + "/pairing/{id:int}", pairing_detail, methods=["GET", "DELETE"]),
         Route(p + "/pairing/{id:int}/file", pairing_file, methods=["GET"]),
         Route(p + "/pairing/{id:int}/apps", pairing_apps, methods=["GET"]),

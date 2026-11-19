@@ -514,18 +514,23 @@ async function renderSigning() {
 // -------------------------------------------------------------- pairing --
 const pairKind = { lockdown: "Pairing-Datei", rp: "RPPairing" };
 
-async function pairingJob(jid, title) {
-  const form = modal(`<h2>${esc(title)}</h2><div id="pjlog" class="small mono" style="white-space:pre-wrap;min-height:60px"></div>
-    <div id="pjpin" hidden class="row" style="margin-top:10px"><input name="pin" inputmode="numeric" autocomplete="one-time-code" placeholder="PIN vom iPhone" style="width:160px"><button type="button" class="primary" id="pjsend">Senden</button></div>
-    <div class="row" style="margin-top:16px"><button value="cancel">Schließen</button></div>`);
-  $("#pjsend", form).onclick = guard(async () => { await api("POST", `/pairing/jobs/${jid}/pin`, { pin: form.pin.value }); form.pin.value = ""; });
+async function pairingJob(jid, title, hint = "") {
+  const form = modal(`<h2>${esc(title)}</h2>${hint ? `<div class="muted small" style="margin-bottom:8px">${hint}</div>` : ""}
+    <div id="pjpin" hidden style="text-align:center;margin:12px 0"><div class="muted small">PIN am iPhone eingeben</div>
+      <div class="mono" style="font-size:2.4em;letter-spacing:.25em;font-weight:600" id="pjpinv"></div></div>
+    <div id="pjlog" class="small mono" style="white-space:pre-wrap;min-height:60px"></div>
+    <div class="row" style="margin-top:16px"><button value="cancel" id="pjclose">Abbrechen</button></div>`);
+  let done = false;
+  $("#pjclose", form).addEventListener("click", () => { if (!done) api("DELETE", `/pairing/jobs/${jid}`).catch(() => {}); });
   for (;;) {
     const j = await api("GET", `/pairing/jobs/${jid}`);
     $("#pjlog", form).textContent = j.log.join("\n") + (j.status === "läuft" ? "\n…" : "");
-    $("#pjpin", form).hidden = !j.need_pin;
+    $("#pjpin", form).hidden = !(j.pin && j.status === "läuft");
+    $("#pjpinv", form).textContent = j.pin || "";
     if (j.status !== "läuft") {
+      done = true; $("#pjclose", form).textContent = "Schließen";
       if (j.status === "fertig") { toast("Pairing-Datei erstellt"); $("#modal").close(); }
-      else $("#pjlog", form).textContent += `\n\nFehler: ${j.error}`;
+      else if (j.status === "fehler") $("#pjlog", form).textContent += `\n\nFehler: ${j.error}`;
       return j;
     }
     if (!$("#modal").open) return j;
@@ -567,10 +572,9 @@ async function renderPairing() {
       <div class="muted small" style="margin-top:10px">Die Dateien liegen verschlüsselt auf deinem Server – sie werden für Prüfen/Erneuern per WLAN gebraucht. Wer eine Pairing-Datei hat, kann das iPhone fernsteuern: nicht weitergeben.</div></div>
 
     <div class="panel stack"><h2>Koppeln über WLAN (iOS 27+)</h2>
-      <div class="muted small">Ganz ohne Kabel geht nur das neue RPPairing ab iOS 27: iPhone entsperren und im selben WLAN lassen, hier suchen und koppeln – das iPhone zeigt dann eine PIN, die du hier eingibst. Ältere iOS-Versionen: einmal per USB koppeln, danach geht Prüfen/Erneuern per WLAN.
-        Die Suche (mDNS) braucht <code>network_mode: host</code> für den Container – sonst IP und Port von Hand eintragen.</div>
-      <div class="row"><button class="sm" id="pdisc">Im Netzwerk suchen</button></div><div id="pdres"></div>
-      <form class="row" id="pwform"><input name="ip" placeholder="IP des iPhones" style="width:180px" required><input name="port" placeholder="Port" inputmode="numeric" style="width:90px" required><button class="primary sm">Koppeln</button></form></div>`;
+      <div class="muted small">Ganz ohne Kabel: Der Server meldet sich im WLAN als Computer „${esc(st.host_name)}“. Am iPhone (entsperrt, gleiches WLAN) die Kopplung mit „${esc(st.host_name)}“ auswählen, dann die PIN eingeben, die hier erscheint.
+        Braucht <code>network_mode: host</code> für den Container. Ältere iOS-Versionen: einmal per USB koppeln, danach geht Prüfen/Erneuern per WLAN.</div>
+      <div class="row"><button class="primary sm" id="pwstart">WLAN-Kopplung starten</button></div></div>`;
 
   $("#prefresh")?.addEventListener("click", guard(renderPairing));
   $$("tr[data-udid]").forEach((tr) => {
@@ -604,25 +608,11 @@ async function renderPairing() {
     }));
     $("[data-push]", tr).onclick = guard(() => pairingPushDialog(p));
   });
-  $("#pdisc").onclick = guard(async () => {
-    $("#pdres").innerHTML = '<div class="muted small">Suche …</div>';
-    const { services } = await api("GET", "/pairing/discover?timeout=5");
-    const rp = services.filter((s) => s.type === "remotepairing");
-    const other = services.filter((s) => s.type !== "remotepairing");
-    $("#pdres").innerHTML = rp.length ? `<table><tbody>${rp.map((s, i) => `<tr><td><b>${esc(s.txt?.name || s.host)}</b><div class="muted small mono">${esc((s.ipv4[0] || s.addresses[0] || "") + ":" + s.port)}</div></td><td style="text-align:right"><button class="sm primary" data-wp="${i}">Koppeln</button></td></tr>`).join("")}</tbody></table>`
-      : `<div class="muted small">Kein koppelbares Gerät gefunden${other.length ? ` (${other.length} bereits gekoppelte iPhones im Netz sichtbar)` : services.length ? "" : " – ohne network_mode: host sieht der Container kein mDNS"}.</div>`;
-    $$("[data-wp]", $("#pdres")).forEach((b) => b.addEventListener("click", guard(async () => {
-      const s = rp[+b.dataset.wp];
-      await wifiPair(s.ipv4[0] || s.addresses[0], s.port);
-    })));
+  $("#pwstart").onclick = guard(async () => {
+    const { job } = await api("POST", "/pairing/wifi", {});
+    const j = await pairingJob(job, "Über WLAN koppeln", `Am iPhone „${esc(st.host_name)}“ zum Koppeln wählen. Wartet bis zu 5 Minuten.`);
+    if (j.status === "fertig") renderPairing();
   });
-  $("#pwform").onsubmit = guard(async (e) => { e.preventDefault(); const f = new FormData(e.target); await wifiPair(f.get("ip"), +f.get("port")); });
-}
-
-async function wifiPair(ip, port) {
-  const { job } = await api("POST", "/pairing/wifi", { ip, port });
-  const j = await pairingJob(job, "Über WLAN koppeln");
-  if (j.status === "fertig") renderPairing();
 }
 
 async function pairingPushDialog(p) {

@@ -108,13 +108,15 @@ class _TmpFile:
             pass
 
 
-def run(args, timeout=60, on_event=None):
+def run(args, timeout=60, on_event=None, on_start=None):
     """Run the helper; returns the final result dict. Raises RuntimeError on failure."""
     exe = helper()
     if not exe:
         raise RuntimeError("ipas-pair ist in diesem Image nicht enthalten")
     p = subprocess.Popen([exe, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                          env={**os.environ, "RUST_LOG": "off"})
+    if on_start:
+        on_start(p)
     timer = threading.Timer(timeout, p.kill)
     timer.start()
     result = None
@@ -149,7 +151,7 @@ def run(args, timeout=60, on_event=None):
 def _job(kind, **extra):
     jid = uuid.uuid4().hex[:12]
     with _lock:
-        _jobs[jid] = {"id": jid, "kind": kind, "status": "läuft", "log": [], "need_pin": False,
+        _jobs[jid] = {"id": jid, "kind": kind, "status": "läuft", "log": [], "pin": "",
                       "pairing_id": None, "error": "", **extra}
     return jid
 
@@ -158,8 +160,8 @@ def _event(jid, msg):
     j = _jobs[jid]
     j["log"].append(msg.get("message", ""))
     j["log"] = j["log"][-30:]
-    if msg.get("event") == "pin":
-        j["need_pin"] = True
+    if msg.get("event") == "show_pin":
+        j["pin"] = msg.get("pin", "")
 
 
 def job(jid):
@@ -167,16 +169,14 @@ def job(jid):
     return {k: v for k, v in j.items() if not k.startswith("_")} if j else None
 
 
-def submit_pin(jid, pin: str):
+def cancel(jid):
     j = _jobs.get(jid)
-    if not j or not j.get("_pin_file"):
-        raise ValueError("Auftrag unbekannt")
-    pin = re.sub(r"\D", "", pin or "")
-    if len(pin) < 4:
-        raise ValueError("PIN fehlt")
-    with open(j["_pin_file"], "w") as f:
-        f.write(pin)
-    j["need_pin"] = False
+    if not j:
+        raise LookupError("Auftrag unbekannt")
+    proc = j.get("_proc")
+    if j["status"] == "läuft" and proc and proc.poll() is None:
+        j["_cancelled"] = True
+        proc.kill()
 
 
 def _spawn(jid, fn, *args):
@@ -186,8 +186,10 @@ def _spawn(jid, fn, *args):
             j["pairing_id"] = fn(jid, *args)
             j["status"] = "fertig"
         except Exception as e:
-            j["status"] = "fehler"
-            j["error"] = str(e)
+            if j.get("_cancelled"):
+                j["status"], j["error"] = "abgebrochen", ""
+            else:
+                j["status"], j["error"] = "fehler", str(e)
     threading.Thread(target=runner, daemon=True, name=f"pair-{jid}").start()
     return jid
 
@@ -461,26 +463,29 @@ def renew_wifi(pid, ip=""):
 
 
 # ------------------------------------------------- Wi-Fi RPPairing (iOS 27+)
-def _do_wifipair(jid, ip, port, udid_hint):
+# The iPhone initiates: we advertise ourselves as a pairable computer via mDNS,
+# the iPhone connects and the user types the PIN we display.
+def _do_wifiaccept(jid):
     j = _jobs[jid]
-    with _TmpFile() as out, _TmpFile(suffix=".pin") as pin:
-        os.unlink(pin.path)               # helper waits until the file appears
-        j["_pin_file"] = pin.path
-        run(["wifipair", "--ip", ip, "--port", str(port), "--host", config.PAIRING_HOST_NAME,
-             "--out", out.path, "--pin-file", pin.path, "--timeout", "180"],
-            timeout=240, on_event=lambda m: _event(jid, m))
-        udid = udid_hint or f"wifi-{ip}"
-        dev = {}
-        lock = db.one("SELECT * FROM pairings WHERE udid=? AND kind='lockdown'", udid) if udid_hint else None
+
+    def started(p):
+        j["_proc"] = p
+
+    with _TmpFile() as out:
+        res = run(["wifiaccept", "--name", config.PAIRING_HOST_NAME, "--out", out.path, "--timeout", "300"],
+                  timeout=330, on_event=lambda m: _event(jid, m), on_start=started)
+        udid = res.get("udid") or f"wifi-{res.get('ip', '')}"
+        dev = {"DeviceName": res.get("name", ""), "ProductType": res.get("model", "")}
+        lock = db.one("SELECT * FROM pairings WHERE udid=? AND kind='lockdown'", udid)
         if lock:
-            dev = {"DeviceName": lock["name"], "ProductVersion": lock["ios"], "ProductType": lock["model"],
-                   "WiFiAddress": lock["wifi_mac"]}
-        return _save(udid, "rp", out.read(), dev, ip=ip, rp_port=int(port), host_name=config.PAIRING_HOST_NAME)
+            dev.update({"ProductVersion": lock["ios"], "WiFiAddress": lock["wifi_mac"]})
+        return _save(udid, "rp", out.read(), dev, ip=res.get("ip", ""), host_name=config.PAIRING_HOST_NAME)
 
 
-def start_wifipair(ip: str, port: int, udid: str = "") -> str:
-    if not ip or not port:
-        raise ValueError("IP und Port des RemotePairing-Dienstes angeben (oder per Suche wählen)")
+def start_wifiaccept() -> str:
     if not helper():
         raise RuntimeError("ipas-pair ist in diesem Image nicht enthalten")
-    return _spawn(_job("wifi-rp", ip=ip), _do_wifipair, ip, int(port), udid)
+    with _lock:
+        if any(j["kind"] == "wifi-rp" and j["status"] == "läuft" for j in _jobs.values()):
+            raise ValueError("Es wartet bereits eine WLAN-Kopplung")
+    return _spawn(_job("wifi-rp"), _do_wifiaccept)

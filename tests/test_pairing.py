@@ -44,13 +44,9 @@ def call(method, path, body=None):
             return e.code, p, e.headers
 
 
-def wait_job(jid, pin=None):
+def wait_job(jid):
     for _ in range(100):
         _, j, _ = call("GET", f"/api/v1/pairing/jobs/{jid}")
-        if pin and j.get("need_pin"):
-            s, _, _ = call("POST", f"/api/v1/pairing/jobs/{jid}/pin", {"pin": pin})
-            check(s == 200, "PIN übermittelt")
-            pin = None
         if j["status"] != "läuft":
             return j
         time.sleep(0.2)
@@ -62,8 +58,9 @@ def main():
     tmp = Path(tempfile.mkdtemp())
     fake = ROOT / "tests" / "fake_idevice"
     log = tmp / "calls.jsonl"
+    hang = tmp / "hang"
     env = {**os.environ, "DATA_DIR": str(tmp / "data"), "BASE_URL": "https://apps.example.test", "NO_PROXY": "127.0.0.1",
-           "IDEVICE_BIN_DIR": str(fake), "IPAS_PAIR_BIN": str(fake / "ipas-pair"), "FAKE_PAIR_LOG": str(log),
+           "IDEVICE_BIN_DIR": str(fake), "IPAS_PAIR_BIN": str(fake / "ipas-pair"), "FAKE_PAIR_LOG": str(log), "FAKE_PAIR_HANG": str(hang),
            "ADMIN_USER": "admin", "ADMIN_PASSWORD": "password123", "GITHUB_TOKEN": ""}
     srv = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(PORT)], cwd=ROOT, env=env,
                            stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
@@ -128,18 +125,34 @@ def main():
         s, d, _ = call("POST", f"/api/v1/pairing/{rid}/verify", {})
         check(s == 200 and d["rp_port"] == 49152, "RP per WLAN geprüft")
 
-        print("WLAN-Kopplung mit PIN")
-        s, d, _ = call("POST", "/api/v1/pairing/wifi", {"ip": "192.168.1.77", "port": 49152})
-        j = wait_job(d["job"], pin="123456")
+        print("WLAN-Kopplung (iPhone verbindet sich, Server zeigt PIN)")
+        s, d, _ = call("POST", "/api/v1/pairing/wifi", {})
+        check(s == 202, "gestartet")
+        s2, d2, _ = call("POST", "/api/v1/pairing/wifi", {})
+        check(s2 == 400, "nur eine gleichzeitig")
+        seen_pin = ""
+        for _ in range(60):
+            _, j, _ = call("GET", f"/api/v1/pairing/jobs/{d['job']}")
+            seen_pin = seen_pin or j.get("pin", "")
+            if j["status"] != "läuft":
+                break
+            time.sleep(0.2)
+        check(seen_pin == "482913", "PIN wird angezeigt")
         check(j["status"] == "fertig", f"gekoppelt ({j.get('error')})")
-        s, d, _ = call("POST", "/api/v1/pairing/wifi", {"ip": "192.168.1.77", "port": 49152})
-        j = wait_job(d["job"], pin="000111")
-        check(j["status"] == "fehler" and "PIN" in j["error"], "falsche PIN → Fehler")
+        _, p, _ = call("GET", f"/api/v1/pairing/{j['pairing_id']}")
+        check(p["kind"] == "rp" and p["udid"] == UDID and p["ip"] == "192.168.1.50", "RP-Datei mit UDID vom iPhone")
+        hang.write_text("1")
+        s, d, _ = call("POST", "/api/v1/pairing/wifi", {})
+        time.sleep(0.5)
+        s, _, _ = call("DELETE", f"/api/v1/pairing/jobs/{d['job']}")
+        j = wait_job(d["job"])
+        check(s == 200 and j["status"] == "abgebrochen", "abbrechbar")
+        hang.unlink()
 
         print("Löschen")
         s, _, _ = call("DELETE", f"/api/v1/pairing/{rid}")
         _, st, _ = call("GET", "/api/v1/pairing")
-        check(s == 200 and len(st["pairings"]) == 2, "gelöscht")
+        check(s == 200 and len(st["pairings"]) == 1, "gelöscht")
         s, _, _ = call("GET", f"/api/v1/pairing/{rid}/file")
         check(s == 404, "weg")
         TOKEN = None

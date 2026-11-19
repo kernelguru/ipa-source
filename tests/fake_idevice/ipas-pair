@@ -39,19 +39,15 @@ elif cmd == "discover":
          "port": 49152, "ipv4": ["192.168.1.50"], "addresses": ["192.168.1.50"], "txt": {}}])
 elif cmd == "rpverify":
     out(ok=True, valid=True)
-elif cmd == "wifipair":
-    out(event="pin", message="PIN vom iPhone eingeben")
-    for _ in range(100):
-        if os.path.exists(f["pin-file"]):
-            pin = open(f["pin-file"]).read().strip()
-            if pin:
-                break
-        time.sleep(0.1)
-    else:
-        out(ok=False, error="keine PIN"); sys.exit(1)
-    if pin != "123456":
-        out(ok=False, error="falsche PIN"); sys.exit(1)
+elif cmd == "wifiaccept":
+    out(event="advertising", port=50123, message="Warte auf das iPhone")
+    if os.environ.get("FAKE_PAIR_HANG") and os.path.exists(os.environ["FAKE_PAIR_HANG"]):
+        time.sleep(60)
+    time.sleep(0.3)
+    out(event="progress", message="iPhone verbunden (192.168.1.50)")
+    out(event="show_pin", pin="482913", message="PIN am iPhone eingeben")
+    time.sleep(1.5)
     open(f["out"], "wb").write(b"<plist>wifi-rp</plist>")
-    out(ok=True, identifier="Y")
+    out(ok=True, udid="00008110-001A2B3C4D5E801E", name="Marcs iPhone", model="iPhone17,1", ip="192.168.1.50", identifier="Y")
 else:
     out(ok=False, error="unknown"); sys.exit(1)

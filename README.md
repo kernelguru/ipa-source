@@ -198,8 +198,10 @@ eingebunden sein), einmal koppeln, dann:
   Reynard, StosDebug …). Mit „alle Apps zeigen“ auch beliebige Ziele.
 - **WLAN prüfen / WLAN erneuern**: sucht das iPhone im WLAN, prüft, ob es die Kopplung noch akzeptiert, und
   schreibt die Datei erneut in alle Apps, in die sie schon einmal ging (z. B. nach einer Neuinstallation von StikDebug).
-- **Koppeln über WLAN** ohne Kabel geht nur mit RPPairing ab **iOS 27** (PIN vom iPhone eingeben).
-  Die klassische Kopplung braucht beim ersten Mal immer USB.
+- **Koppeln über WLAN** ohne Kabel geht nur mit RPPairing ab **iOS 27**. Dabei meldet sich der Server im
+  WLAN als koppelbarer Computer (`_remotepairing-pairable-host._tcp`, Name = `PAIRING_HOST_NAME`, Standard
+  „ipa-source“). Am iPhone diesen Computer zum Koppeln wählen und die PIN eingeben, die die Weboberfläche
+  anzeigt. Die klassische Kopplung braucht beim ersten Mal immer USB.
 
 Das iPhone wird im WLAN per mDNS gefunden. Dafür muss der Container im Host-Netz laufen
 (`network_mode: host`, dann entfällt `ports:`; ist Port 8080 auf dem Host belegt, `LISTEN_PORT` setzen
