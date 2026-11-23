@@ -5,6 +5,12 @@ if [ "$1" = "-h" ]; then
   exit 0
 fi
 if [ "$3" != "install" ]; then echo "Bug Reports: <https://github.com/libimobiledevice/ideviceinstaller/issues>"; exit 2; fi
+# like the real tool: read the IPA in chunks while uploading, print nothing until done
+size=$(wc -c < "$4")
+chunk=$(( size / 4 + 1 ))
+exec 3< "$4"
+for i in 1 2 3 4; do dd bs="$chunk" count=1 <&3 >/dev/null 2>&1; sleep 0.8; done
+exec 3<&-
 echo "Uploading $(basename "$4") package contents... DONE."
 for p in 5 15 40 60 90; do echo "Install: Step ($p%)"; sleep 0.2; done
 echo "Install: Complete"

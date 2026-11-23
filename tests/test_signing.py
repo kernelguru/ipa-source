@@ -240,12 +240,20 @@ def main():
         st, lst = call("GET", "/api/v1/signed")
         check(s["id"] not in [x["id"] for x in lst["signed"]], "older copy of the same installed app replaced")
         st, j = call("POST", f"/api/v1/signed/{s3['id']}/install-usb", {"udid": udid})
-        for _ in range(40):
+        seen_upload, seen_install = [], False
+        for _ in range(60):
             st, j = call("GET", f"/api/v1/jobs/{j['id']}")
+            if j.get("phase") == "upload":
+                seen_upload.append((j["progress"], j["message"]))
+            if j.get("phase") == "install":
+                seen_install = True
             if j["status"] != "läuft":
                 break
             time.sleep(0.25)
         check(j["status"] == "fertig" and j["progress"] == 100, "USB install job")
+        check(seen_upload and any(p > 0 for p, _ in seen_upload) and " von " in seen_upload[-1][1],
+              f"upload progress measured ({seen_upload[-1] if seen_upload else None})")
+        check(seen_install, "install phase follows upload")
         st, d = call("POST", f"/api/v1/signed/{s3['id']}/install-usb", {"udid": "not-in-profile"})
         check(st == 400, "device not in profile rejected")
 

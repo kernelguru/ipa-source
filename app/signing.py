@@ -464,6 +464,76 @@ def _install_cmd(inst: str, udid: str, path) -> list:
     return [inst, "-u", udid, "-i", str(path)]
 
 
+def _fmt_bytes(n):
+    for unit, f in (("GB", 1 << 30), ("MB", 1 << 20)):
+        if n >= f or unit == "MB":
+            v = n / f
+            return (f"{v:.1f}" if v < 100 else f"{v:.0f}").replace(".", ",") + " " + unit
+
+
+def _fmt_eta(sec):
+    if sec < 60:
+        return "noch < 1 Min."
+    m = round(sec / 60)
+    return f"noch ca. {m} Min." if m < 90 else f"noch ca. {m // 60} Std. {m % 60} Min."
+
+
+def upload_status(done, total, speed):
+    """'4,2 GB von 22 GB · 32 MB/s · noch ca. 9 Min.'"""
+    parts = [f"{_fmt_bytes(done)} von {_fmt_bytes(total)}"]
+    if speed > 0:
+        mbs = speed / (1 << 20)
+        parts.append((f"{mbs:.1f}" if mbs < 10 else f"{mbs:.0f}").replace(".", ",") + " MB/s")
+        parts.append(_fmt_eta(max(total - done, 0) / speed))
+    return "Übertrage aufs iPhone: " + " · ".join(parts)
+
+
+def _read_offset(pid, target):
+    """Read position of `target` in process `pid` (via /proc/<pid>/fdinfo), or None."""
+    base = f"/proc/{pid}/fd"
+    try:
+        fds = os.listdir(base)
+    except OSError:
+        return None
+    best = None
+    for fd in fds:
+        try:
+            if os.readlink(f"{base}/{fd}") != target:
+                continue
+            with open(f"/proc/{pid}/fdinfo/{fd}") as f:
+                for line in f:
+                    if line.startswith("pos:"):
+                        pos = int(line.split()[1])
+                        best = pos if best is None else max(best, pos)
+        except (OSError, ValueError):
+            continue
+    return best
+
+
+def _watch_upload(job, proc, path, interval=1.0):
+    """ideviceinstaller prints nothing while copying the IPA; measure how far it has read the file."""
+    target = os.path.realpath(path)
+    try:
+        total = os.path.getsize(target)
+    except OSError:
+        return
+    last_pos, last_t, speed = 0, time.monotonic(), 0.0
+    while proc.poll() is None and job.get("phase") != "install":
+        pos = _read_offset(proc.pid, target)
+        now = time.monotonic()
+        if pos is not None:
+            dt = now - last_t
+            if dt > 0 and pos >= last_pos:
+                inst = (pos - last_pos) / dt
+                speed = inst if speed == 0 else 0.7 * speed + 0.3 * inst
+            last_pos, last_t = pos, now
+            if job.get("phase") != "install":
+                job.update(phase="upload", progress=min(99, int(pos * 100 / total)) if total else 0,
+                           uploaded=pos, total=total, speed=int(speed),
+                           message=upload_status(pos, total, speed))
+        time.sleep(interval)
+
+
 def _usb_install(jid, inst, path, udid):
     job = _jobs[jid]
     cmd = _install_cmd(inst, udid, path)
@@ -471,6 +541,7 @@ def _usb_install(jid, inst, path, udid):
     try:
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, encoding="utf-8", errors="replace", bufsize=1)
+        threading.Thread(target=_watch_upload, args=(job, p, path), daemon=True, name=f"upload-{jid}").start()
         last = ""
         for line in p.stdout:
             line = ANSI.sub("", line).strip()
@@ -479,11 +550,13 @@ def _usb_install(jid, inst, path, udid):
             last = line
             job["log"] = (job["log"] + line + "\n")[-12000:]
             m = re.search(r"\((\d+)%\)", line)
-            if m:
+            if line.startswith("Install:") or line.startswith("Installing"):
+                job["phase"] = "install"
+            if m and job.get("phase") == "install":
                 job["progress"] = int(m.group(1))
             if line.startswith("Install:") or line.startswith("Installing"):
-                job["message"] = line
-            elif "Uploading" in line or "Copying" in line:
+                job["message"] = "Installiere auf dem iPhone: " + line.split(":", 1)[-1].strip()
+            elif ("Uploading" in line or "Copying" in line) and job.get("phase") != "upload":
                 job["message"] = "Übertrage IPA aufs iPhone …"
             if "ERROR" in line.upper() or line.lower().startswith(("could not", "no device", "unable")):
                 job["message"] = line
@@ -498,7 +571,7 @@ def _usb_install(jid, inst, path, udid):
                     why = f"ideviceinstaller wurde beendet ({signal.Signals(-rc).name})"
                 except ValueError:
                     why = f"ideviceinstaller wurde beendet (Signal {-rc})"
-            elif job["message"].startswith(("Übertrage", "Install:", "Installing")) or not job["message"]:
+            elif job["message"].startswith(("Übertrage", "Installiere", "Install:", "Installing")) or not job["message"]:
                 why = f"{last or 'keine Ausgabe'} (Exit-Code {rc})"
             else:
                 why = f"{job['message']} (Exit-Code {rc})"
