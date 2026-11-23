@@ -836,7 +836,7 @@ async def install_job(request):
 
 @endpoint("full")
 async def devices(request):
-    return JSONResponse(await run_in_threadpool(signing.devices))
+    return JSONResponse(await run_in_threadpool(signing.devices, request.query_params.get("refresh") == "1"))
 
 
 @endpoint("full")

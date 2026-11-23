@@ -15,6 +15,7 @@ import threading
 import time
 import urllib.parse
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 from . import certs, config, db, ipapack, store
 from .db import jloads
@@ -336,39 +337,90 @@ def _run(args, timeout=20):
     return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
 
 
-def devices():
+_dev_cache = {"at": 0.0, "data": None}
+_dev_lock = threading.Lock()
+DEVICE_CACHE_SECONDS = 20
+USBMUXD_HUNG = ("usbmuxd antwortet nicht. Auf dem Docker-Host neu starten (rc-service usbmuxd restart, "
+                "hängenden Prozess ggf. mit kill -9 beenden) und danach den Container neu starten – "
+                "oder den Watchdog aus scripts/ einrichten.")
+
+
+def _ideviceinfo(udid, network):
+    """One ideviceinfo call; returns the top-level keys we show."""
+    rc, so, _ = _run([tool("ideviceinfo"), "-u", udid, *(["-n"] if network else [])], timeout=6 if network else 10)
+    info = {}
+    if rc == 0:
+        for line in so.splitlines():
+            if line[:1].isspace() or ": " not in line:
+                continue
+            k, v = line.split(": ", 1)
+            if k in ("DeviceName", "ProductVersion", "ProductType"):
+                info[k] = v.strip()
+    return info
+
+
+def _device_detail(udid, conn):
+    d = {"udid": udid, "connection": conn, "paired": False, "name": "", "ios": "", "model": ""}
+    net = conn == "network"
+    try:
+        prc, _, _ = _run([tool("idevicepair"), "-u", udid, "validate"],
+                         timeout=6 if net else 10)
+        d["paired"] = prc == 0
+        if d["paired"]:
+            info = _ideviceinfo(udid, net)
+            d.update(name=info.get("DeviceName", ""), ios=info.get("ProductVersion", ""),
+                     model=info.get("ProductType", ""))
+    except subprocess.TimeoutExpired:
+        d["error"] = "Gerät antwortet nicht (gesperrt oder im Ruhezustand?)"
+    except Exception as e:
+        d["error"] = str(e)
+    return d
+
+
+def invalidate_devices():
+    _dev_cache["at"] = 0.0
+
+
+def devices(refresh: bool = False):
+    with _dev_lock:
+        if not refresh and _dev_cache["data"] and time.monotonic() - _dev_cache["at"] < DEVICE_CACHE_SECONDS:
+            return _dev_cache["data"]
+        data = _devices()
+        _dev_cache.update(at=time.monotonic(), data=data)
+        return data
+
+
+def _devices():
     caps = capabilities()
-    out = {"available": bool(tool("idevice_id")), **caps, "devices": []}
+    out = {"available": bool(tool("idevice_id")), **caps, "devices": [], "usbmuxd_error": ""}
     if not out["available"]:
         return out
-    seen = set()
+    found = []
     for flag, conn in (("-l", "usb"), ("-n", "network")):
         try:
-            rc, so, _ = _run([tool("idevice_id"), flag])
+            rc, so, se = _run([tool("idevice_id"), flag], timeout=4)
+        except subprocess.TimeoutExpired:
+            out["usbmuxd_error"] = USBMUXD_HUNG
+            return out
         except Exception:
             continue
+        if rc != 0:
+            if "device list" in (se + so).lower() and out.get("usbmuxd"):
+                out["usbmuxd_error"] = USBMUXD_HUNG
+                return out
+            continue
         for udid in so.split():
-            if udid in seen:
-                continue
-            seen.add(udid)
-            d = {"udid": udid, "connection": conn, "paired": False, "name": "", "ios": "", "model": ""}
-            try:
-                prc, _, _ = _run([tool("idevicepair"), "-u", udid, "validate"])
-                d["paired"] = prc == 0
-                if d["paired"]:
-                    net = ["-n"] if conn == "network" else []
-                    for key, field in (("DeviceName", "name"), ("ProductVersion", "ios"), ("ProductType", "model")):
-                        rc, val, _ = _run([tool("ideviceinfo"), "-u", udid, *net, "-k", key])
-                        if rc == 0:
-                            d[field] = val
-            except Exception as e:
-                d["error"] = str(e)
-            out["devices"].append(d)
+            if udid not in [u for u, _ in found]:
+                found.append((udid, conn))
+    if found:
+        with ThreadPoolExecutor(max_workers=min(8, len(found))) as ex:
+            out["devices"] = list(ex.map(lambda f: _device_detail(*f), found))
     return out
 
 
 def pair(udid: str):
     rc, so, se = _run([tool("idevicepair"), "-u", udid, "pair"], timeout=60)
+    invalidate_devices()
     msg = (so or se).strip()
     if rc != 0:
         if "Please accept the trust dialog" in msg or "passcode" in msg.lower():

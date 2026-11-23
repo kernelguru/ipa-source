@@ -160,6 +160,21 @@ muss das USB-Gerät dorthin durchgereicht werden. Alternativ `USBMUXD_EMBEDDED=1
 `devices: ["/dev/bus/usb:/dev/bus/usb"]` und `privileged: true`. Dann läuft usbmuxd im Container, und die Kopplung
 liegt in `/data/lockdown`.
 
+**usbmuxd hängt?** Dann lädt die Geräteliste nicht, und die Weboberfläche meldet „usbmuxd antwortet nicht“.
+Abhilfe auf dem Host: hängenden Prozess beenden (`kill -9 $(pidof usbmuxd)`), `rc-service usbmuxd restart`
+(bzw. `systemctl restart usbmuxd`) und danach den Container neu starten, weil der eingebundene Socket sonst
+noch auf den alten zeigt. Automatisch erledigt das `scripts/usbmuxd-watchdog.sh` (jede Minute per cron):
+```sh
+cp scripts/usbmuxd-watchdog.sh /usr/local/sbin/usbmuxd-watchdog && chmod 755 /usr/local/sbin/usbmuxd-watchdog
+echo '* * * * * /usr/local/sbin/usbmuxd-watchdog' >> /etc/crontabs/root   # Alpine; sonst crontab -e
+rc-update add crond default && rc-service crond start
+usbmuxd-watchdog -v                                                     # einmal testen
+```
+Es erkennt einen abgestürzten **und** einen hängenden usbmuxd (Prozess da, aber keine Antwort innerhalb von
+8 s, zweimal geprüft), beendet ihn notfalls mit `kill -9`, startet ihn neu und startet den Container
+`ipa-source` neu. Name und Wartezeit über `CONTAINER=…` / `PROBE_TIMEOUT=…` in
+`/etc/default/usbmuxd-watchdog`. Meldungen landen im Syslog (`grep usbmuxd-watchdog /var/log/messages`).
+
 **Docker in einer Hyper-V-VM (Windows-Host):** Hyper-V reicht USB nicht durch. Zwei Wege:
 - *usbipd-win*: Auf Windows `usbipd bind --busid <ID>`, in der VM `usbip attach -r <Windows-IP> -b <ID>`
   (Paket `usbip`/`linux-tools`, Modul `vhci-hcd`). Danach usbmuxd in der VM wie oben.

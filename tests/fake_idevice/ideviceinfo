@@ -1,3 +1,7 @@
 #!/bin/sh
+# fake ideviceinfo: "-k KEY" prints one value, otherwise the full key list
 for a in "$@"; do last=$a; done
-case "$last" in DeviceName) echo "Marcs iPhone";; ProductVersion) echo "26.1";; ProductType) echo "iPhone16,2";; esac
+case "$last" in
+  DeviceName) echo "Marcs iPhone";; ProductVersion) echo "26.1";; ProductType) echo "iPhone16,2";;
+  *) printf 'ActivationState: Activated\nDeviceName: Marcs iPhone\nNonVolatileRAM:\n ProductVersion: 99\nProductType: iPhone16,2\nProductVersion: 26.1\n';;
+esac

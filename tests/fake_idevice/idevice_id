@@ -1,4 +1,5 @@
 #!/bin/sh
-# fake libimobiledevice for tests
+# fake libimobiledevice for tests; FAKE_USBMUXD_HANG=<file>: behave like a hung usbmuxd while it exists
+if [ -n "$FAKE_USBMUXD_HANG" ] && [ -e "$FAKE_USBMUXD_HANG" ]; then sleep 10; echo "ERROR: Unable to retrieve device list!" >&2; exit 255; fi
 [ "$1" = "-l" ] && echo "00008110-001A2B3C4D5E801E"
 exit 0

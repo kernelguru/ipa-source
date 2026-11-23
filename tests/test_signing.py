@@ -109,7 +109,7 @@ def main():
     fixes.mkdir()
     shutil.copy(macho, fixes / "FilePickerFix.dylib")     # stand-in Mach-O dylib for the injection test
     env = {**os.environ, "DATA_DIR": str(tmp / "data"), "BASE_URL": "https://apps.example.test", "NO_PROXY": "127.0.0.1",
-           "ZSIGN_BIN": ZSIGN, "IDEVICE_BIN_DIR": str(fake), "FIXES_DIR": str(fixes), "IDEVICEINSTALLER_BIN": str(fake / "ideviceinstaller"),
+           "ZSIGN_BIN": ZSIGN, "IDEVICE_BIN_DIR": str(fake), "FAKE_USBMUXD_HANG": str(tmp / "usbmuxd-hang"), "FIXES_DIR": str(fixes), "IDEVICEINSTALLER_BIN": str(fake / "ideviceinstaller"),
            "ADMIN_USER": "admin", "ADMIN_PASSWORD": "password123", "GITHUB_TOKEN": ""}
     srv = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(PORT)], cwd=ROOT, env=env,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -223,7 +223,20 @@ def main():
               f"failed signing gives a readable reason + log ({bad['error']})")
 
         st, devs = call("GET", "/api/v1/devices")
-        check(devs["available"] and devs["devices"][0]["paired"], "device list")
+        check(devs["available"] and devs["devices"][0]["paired"] and devs["devices"][0]["name"] == "Marcs iPhone"
+              and devs["devices"][0]["ios"] == "26.1", "device list (one ideviceinfo call parsed)")
+        hang = tmp / "usbmuxd-hang"
+        hang.write_text("1")
+        t0 = time.time()
+        st, cached = call("GET", "/api/v1/devices")
+        check(cached["devices"] and time.time() - t0 < 1, "device list cached")
+        t0 = time.time()
+        st, hung = call("GET", "/api/v1/devices?refresh=1")
+        check(hung["usbmuxd_error"] and not hung["devices"] and time.time() - t0 < 6,
+              f"hung usbmuxd reported quickly ({time.time() - t0:.1f}s)")
+        hang.unlink()
+        st, devs = call("GET", "/api/v1/devices?refresh=1")
+        check(devs["devices"] and not devs["usbmuxd_error"], "recovers after usbmuxd restart")
         st, lst = call("GET", "/api/v1/signed")
         check(s["id"] not in [x["id"] for x in lst["signed"]], "older copy of the same installed app replaced")
         st, j = call("POST", f"/api/v1/signed/{s3['id']}/install-usb", {"udid": udid})

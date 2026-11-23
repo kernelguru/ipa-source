@@ -440,10 +440,40 @@ function bindSignedActions(el, s) {
   });
 }
 
+// Device list loads after the page so a slow/hung usbmuxd never blocks rendering.
+async function fetchDevices(refresh) {
+  try { return await api("GET", "/devices" + (refresh ? "?refresh=1" : "")); }
+  catch (e) { return { available: true, devices: [], usbmuxd_error: e.message }; }
+}
+
+function usbmuxdHint(devs) {
+  if (devs.usbmuxd_error) return `<div class="small"><span class="badge err">usbmuxd</span> ${esc(devs.usbmuxd_error)}</div>`;
+  return "";
+}
+
+async function loadSigningDevices(refresh) {
+  const box = $("#devlist");
+  if (!box) return;
+  if (refresh) box.innerHTML = '<div class="muted small">Suche Geräte …</div>';
+  const devs = await fetchDevices(refresh);
+  if (!$("#devlist")) return;
+  box.innerHTML = devs.usbmuxd_error ? usbmuxdHint(devs)
+    : !devs.available ? '<div class="muted small">libimobiledevice ist nicht verfügbar. Für USB-Installation das iPhone an den Docker-Host anschließen und den usbmuxd-Socket in den Container einbinden (siehe README).</div>'
+    : devs.devices.length ? `<table><tbody>${devs.devices.map((d) => `<tr data-udid="${esc(d.udid)}"><td><b>${esc(d.name || "Unbekanntes Gerät")}</b><div class="muted small mono">${esc(d.udid)}</div>${d.error ? `<div class="small muted">${esc(d.error)}</div>` : ""}</td>
+        <td class="small">${d.ios ? "iOS " + esc(d.ios) : ""} ${esc(d.model)}</td><td><span class="badge">${d.connection === "usb" ? "USB" : "WLAN"}</span></td>
+        <td style="text-align:right">${d.paired ? '<span class="badge release">gekoppelt</span>' : '<button class="sm primary" data-pair>Koppeln</button>'}</td></tr>`).join("")}</tbody></table>`
+    : `<div class="muted small">Kein iPhone gefunden. Per USB anschließen und entsperren.${devs.usbmuxd ? (devs.usbmuxd_remote ? ` (verbunden mit ${esc(devs.usbmuxd_remote)})` : "") : " (usbmuxd nicht eingebunden – Socket mounten oder USBMUXD_SOCKET_ADDRESS setzen)"}</div>`;
+  $$("tr[data-udid]", box).forEach((tr) => {
+    $("[data-pair]", tr)?.addEventListener("click", guard(async () => {
+      toast("Bitte auf dem iPhone „Vertrauen“ antippen …");
+      const r = await fetch(`/api/v1/devices/${encodeURIComponent(tr.dataset.udid)}/pair`, { method: "POST", headers: { "X-Requested-With": "ipa-source" } });
+      const d = await r.json(); toast(d.message || d?.error?.message, !d.ok); loadSigningDevices(true);
+    }));
+  });
+}
+
 async function renderSigning() {
   const [{ certs: list, capabilities: caps }, { signed }] = await Promise.all([api("GET", "/certs"), api("GET", "/signed")]);
-  let devs = { available: false, devices: [] };
-  try { devs = await api("GET", "/devices"); } catch { /* */ }
   const now = new Date().toISOString();
   view.innerHTML = `<div class="head"><div><h1>Signieren &amp; Installieren</h1>
       <div class="muted">Der Server signiert IPAs selbst (zsign) und installiert sie per Link oder USB – ohne Signier-App auf dem iPhone.</div></div></div>
@@ -461,11 +491,7 @@ async function renderSigning() {
       <div class="muted small" style="margin-top:10px">Das Passwort wird verschlüsselt gespeichert; die Dateien liegen nur auf deinem Server (<code>/data/certs</code>).</div></div>
 
     <div class="panel"><div class="row spread"><h2>Geräte per USB</h2><button class="sm" id="refreshdev">Aktualisieren</button></div>
-      ${!devs.available ? '<div class="muted small">libimobiledevice ist nicht verfügbar. Für USB-Installation das iPhone an den Docker-Host anschließen und den usbmuxd-Socket in den Container einbinden (siehe README).</div>'
-        : devs.devices.length ? `<table><tbody>${devs.devices.map((d) => `<tr data-udid="${esc(d.udid)}"><td><b>${esc(d.name || "Unbekanntes Gerät")}</b><div class="muted small mono">${esc(d.udid)}</div></td>
-            <td class="small">${d.ios ? "iOS " + esc(d.ios) : ""} ${esc(d.model)}</td><td><span class="badge">${d.connection === "usb" ? "USB" : "WLAN"}</span></td>
-            <td style="text-align:right">${d.paired ? '<span class="badge release">gekoppelt</span>' : '<button class="sm primary" data-pair>Koppeln</button>'}</td></tr>`).join("")}</tbody></table>`
-        : `<div class="muted small">Kein iPhone gefunden. Per USB anschließen und entsperren.${devs.usbmuxd ? (devs.usbmuxd_remote ? ` (verbunden mit ${esc(devs.usbmuxd_remote)})` : "") : " (usbmuxd nicht eingebunden – Socket mounten oder USBMUXD_SOCKET_ADDRESS setzen)"}</div>`}</div>
+      <div id="devlist"><div class="muted small">Suche Geräte …</div></div></div>
 
     <div class="panel"><h2>Signierte IPAs</h2>
       ${signed.length ? `<table><thead><tr><th>App</th><th>Zertifikat</th><th>Status</th><th></th></tr></thead><tbody>${signed.map((x) => `<tr data-sid="${x.id}">
@@ -483,19 +509,13 @@ async function renderSigning() {
       <div class="full"><label>Provisioning-Profil (.mobileprovision)</label><input type="file" name="profile" accept=".mobileprovision" required></div></div>
       <div class="row" style="margin-top:16px"><button class="primary">Prüfen &amp; speichern</button><button value="cancel">Abbrechen</button></div>`,
     async (f) => { await api("POST", "/certs", f); toast("Zertifikat gespeichert"); renderSigning(); });
-  $("#refreshdev").onclick = guard(renderSigning);
+  $("#refreshdev").onclick = guard(() => loadSigningDevices(true));
+  loadSigningDevices(false);
   $$("tr[data-id]").forEach((tr) => {
     const id = tr.dataset.id;
     $("[data-def]", tr)?.addEventListener("click", guard(async () => { await api("PATCH", `/certs/${id}`, { is_default: true }); renderSigning(); }));
     $("[data-adapt]", tr)?.addEventListener("change", guard(async (e) => { await api("PATCH", `/certs/${id}`, { adapt_bundle_id: e.target.checked }); toast("Gespeichert – gilt fürs nächste Signieren"); }));
     $("[data-del]", tr).onclick = guard(async () => { if (!confirm("Zertifikat und alle damit signierten IPAs löschen?")) return; await api("DELETE", `/certs/${id}`); renderSigning(); });
-  });
-  $$("tr[data-udid]").forEach((tr) => {
-    $("[data-pair]", tr)?.addEventListener("click", guard(async () => {
-      toast("Bitte auf dem iPhone „Vertrauen“ antippen …");
-      const r = await fetch(`/api/v1/devices/${encodeURIComponent(tr.dataset.udid)}/pair`, { method: "POST", headers: { "X-Requested-With": "ipa-source" } });
-      const d = await r.json(); toast(d.message || d?.error?.message, !d.ok); renderSigning();
-    }));
   });
   $$("tr[data-sid]").forEach((tr) => {
     const x = signed.find((y) => String(y.id) === tr.dataset.sid);
@@ -540,21 +560,12 @@ async function pairingJob(jid, title, hint = "") {
 
 async function renderPairing() {
   const st = await api("GET", "/pairing");
-  let devs = { available: false, devices: [] };
-  try { devs = await api("GET", "/devices"); } catch { /* */ }
-  const usb = devs.devices.filter((d) => d.connection === "usb");
   view.innerHTML = `<div class="head"><div><h1>Pairing-Dateien</h1>
       <div class="muted">Für StikDebug, SideStore, Feather &amp; Co.: iPhone per USB an den Server, Datei laden oder direkt in die App schreiben – später per WLAN prüfen und erneuern.</div></div></div>
     ${!st.available ? '<div class="panel"><span class="badge err">ipas-pair fehlt</span> Das Docker-Image ab Version 0.7 enthält das Pairing-Werkzeug. Bitte Image aktualisieren.</div>' : ""}
 
     <div class="panel"><div class="row spread"><h2>Per USB erzeugen</h2><button class="sm" id="prefresh">Aktualisieren</button></div>
-      ${usb.length ? `<table><tbody>${usb.map((d) => `<tr data-udid="${esc(d.udid)}"><td><b>${esc(d.name || "Unbekanntes Gerät")}</b><div class="muted small mono">${esc(d.udid)}</div></td>
-          <td class="small">${d.ios ? "iOS " + esc(d.ios) : ""} ${esc(d.model)}</td>
-          <td class="row" style="justify-content:flex-end">${d.paired
-            ? `<button class="sm primary" data-mk="lockdown">Pairing-Datei</button><button class="sm" data-mk="rp" title="Neues Format (iOS 17.4+), u. a. für StikDebug, Feather, SideStore">RPPairing</button>`
-            : '<button class="sm primary" data-pair>Koppeln</button>'}</td></tr>`).join("")}</tbody></table>
-        <label class="check small" style="margin-top:8px"><input type="checkbox" id="pwifi" checked> WLAN-Debugging einschalten (nötig, damit StikDebug &amp; Co. ohne Kabel arbeiten)</label>`
-        : `<div class="muted small">Kein iPhone per USB gefunden. Anschließen, entsperren, „Vertrauen“ antippen.${devs.usbmuxd ? "" : " (usbmuxd ist nicht eingebunden – siehe Signieren &amp; Installieren)"}</div>`}</div>
+      <div id="pusb"><div class="muted small">Suche Geräte …</div></div></div>
 
     <div class="panel"><h2>Gespeicherte Pairing-Dateien</h2>
       ${st.pairings.length ? `<table><tbody>${st.pairings.map((p) => `<tr data-pid="${p.id}">
@@ -576,20 +587,8 @@ async function renderPairing() {
         Braucht <code>network_mode: host</code> für den Container. Ältere iOS-Versionen: einmal per USB koppeln, danach geht Prüfen/Erneuern per WLAN.</div>
       <div class="row"><button class="primary sm" id="pwstart">WLAN-Kopplung starten</button></div></div>`;
 
-  $("#prefresh")?.addEventListener("click", guard(renderPairing));
-  $$("tr[data-udid]").forEach((tr) => {
-    const udid = tr.dataset.udid;
-    $("[data-pair]", tr)?.addEventListener("click", guard(async () => {
-      toast("Bitte auf dem iPhone „Vertrauen“ antippen …");
-      const r = await fetch(`/api/v1/devices/${encodeURIComponent(udid)}/pair`, { method: "POST", headers: { "X-Requested-With": "ipa-source" } });
-      const d = await r.json(); toast(d.message || d?.error?.message, !d.ok); renderPairing();
-    }));
-    $$("[data-mk]", tr).forEach((b) => b.addEventListener("click", guard(async () => {
-      const { job } = await api("POST", "/pairing/usb", { udid, kind: b.dataset.mk, wifi: $("#pwifi")?.checked ?? true });
-      const j = await pairingJob(job, b.dataset.mk === "rp" ? "RPPairing erzeugen" : "Pairing-Datei erzeugen");
-      if (j.status === "fertig") renderPairing();
-    })));
-  });
+  $("#prefresh").onclick = guard(() => loadPairingDevices(true));
+  loadPairingDevices(false);
   $$("tr[data-pid]").forEach((tr) => {
     const p = st.pairings.find((x) => String(x.id) === tr.dataset.pid);
     $("[data-pdel]", tr).onclick = guard(async () => { if (!confirm("Pairing-Datei löschen?")) return; await api("DELETE", `/pairing/${p.id}`); renderPairing(); });
@@ -612,6 +611,35 @@ async function renderPairing() {
     const { job } = await api("POST", "/pairing/wifi", {});
     const j = await pairingJob(job, "Über WLAN koppeln", `Am iPhone „${esc(st.host_name)}“ zum Koppeln wählen. Wartet bis zu 5 Minuten.`);
     if (j.status === "fertig") renderPairing();
+  });
+}
+
+async function loadPairingDevices(refresh) {
+  const box = $("#pusb");
+  if (!box) return;
+  if (refresh) box.innerHTML = '<div class="muted small">Suche Geräte …</div>';
+  const devs = await fetchDevices(refresh);
+  if (!$("#pusb")) return;
+  const usb = devs.devices.filter((d) => d.connection === "usb");
+  box.innerHTML = devs.usbmuxd_error ? usbmuxdHint(devs) : (usb.length ? `<table><tbody>${usb.map((d) => `<tr data-udid="${esc(d.udid)}"><td><b>${esc(d.name || "Unbekanntes Gerät")}</b><div class="muted small mono">${esc(d.udid)}</div></td>
+          <td class="small">${d.ios ? "iOS " + esc(d.ios) : ""} ${esc(d.model)}</td>
+          <td class="row" style="justify-content:flex-end">${d.paired
+            ? `<button class="sm primary" data-mk="lockdown">Pairing-Datei</button><button class="sm" data-mk="rp" title="Neues Format (iOS 17.4+), u. a. für StikDebug, Feather, SideStore">RPPairing</button>`
+            : '<button class="sm primary" data-pair>Koppeln</button>'}</td></tr>`).join("")}</tbody></table>
+        <label class="check small" style="margin-top:8px"><input type="checkbox" id="pwifi" checked> WLAN-Debugging einschalten (nötig, damit StikDebug &amp; Co. ohne Kabel arbeiten)</label>`
+        : `<div class="muted small">Kein iPhone per USB gefunden. Anschließen, entsperren, „Vertrauen“ antippen.${devs.usbmuxd ? "" : " (usbmuxd ist nicht eingebunden – siehe Signieren &amp; Installieren)"}</div>`);
+  $$("tr[data-udid]", box).forEach((tr) => {
+    const udid = tr.dataset.udid;
+    $("[data-pair]", tr)?.addEventListener("click", guard(async () => {
+      toast("Bitte auf dem iPhone „Vertrauen“ antippen …");
+      const r = await fetch(`/api/v1/devices/${encodeURIComponent(udid)}/pair`, { method: "POST", headers: { "X-Requested-With": "ipa-source" } });
+      const d = await r.json(); toast(d.message || d?.error?.message, !d.ok); loadPairingDevices(true);
+    }));
+    $$("[data-mk]", tr).forEach((b) => b.addEventListener("click", guard(async () => {
+      const { job } = await api("POST", "/pairing/usb", { udid, kind: b.dataset.mk, wifi: $("#pwifi")?.checked ?? true });
+      const j = await pairingJob(job, b.dataset.mk === "rp" ? "RPPairing erzeugen" : "Pairing-Datei erzeugen");
+      if (j.status === "fertig") renderPairing();
+    })));
   });
 }
 
